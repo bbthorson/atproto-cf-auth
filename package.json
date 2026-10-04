@@ -1,0 +1,63 @@
+{
+  "name": "@bbthorson/atproto-cf-auth",
+  "version": "0.1.0",
+  "description": "Bluesky (AT-Proto OAuth) sign-in for apps on Cloudflare Workers: server handlers, D1/KV session stores, and framework-free browser primitives.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbthorson/atproto-cf-auth.git"
+  },
+  "sideEffects": [
+    "./dist/element.js"
+  ],
+  "exports": {
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./element": {
+      "types": "./dist/element.d.ts",
+      "default": "./dist/element.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@atproto/jwk-jose": "^0.2.4",
+    "@atproto/oauth-client": "^0.8.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "happy-dom": "^20.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "bluesky",
+    "atproto",
+    "oauth",
+    "cloudflare-workers",
+    "d1",
+    "web-component"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
