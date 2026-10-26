@@ -42,12 +42,60 @@ With Astro: call `auth.handle(context.request)` from middleware or from an
 (default `atproto`, which proves identity only; add `transition:generic` to write
 to the user's PDS), `sessionTtlSeconds` (default 30 days), `cookieName`,
 `metadata` (logo, terms and privacy URLs for the consent screen), `onSignIn`,
-`handleResolver` and `requestLock`.
+`handleResolver` and `requestLock` (see [Lock](#lock)).
 
 **To call the user's PDS:** `const session = await auth.getOAuthSession(request)`,
-then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. The
-default lock only covers one isolate, so pass a Durable Object-backed
-`requestLock` before you do this from concurrent requests.
+then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
+you do this from concurrent requests (two `fetch`es from one page is enough),
+add the lock below.
+
+### Lock
+
+A refresh token can be used once. When two requests for the same user land on
+different isolates and both find the access token stale, both refresh it; the
+one that loses holds a spent token, and the session is deleted. The user is
+signed out.
+
+Without `requestLock`, restores are serialised within one isolate, and a refresh
+raced by another isolate is recovered from where the store shows the winner's
+tokens in time. `durableObjectLock` closes the race: each user's restores queue
+at one Durable Object, wherever they run.
+
+```ts
+import { AuthLock, createBlueskyAuth, durableObjectLock } from "@bbthorson/atproto-cf-auth/server";
+
+export { AuthLock }; // the Durable Object class, exported from your Worker's entry
+
+auth ??= createBlueskyAuth({
+  // ...
+  requestLock: durableObjectLock(env.AUTH_LOCK),
+});
+```
+
+```toml
+# wrangler.toml
+[[durable_objects.bindings]]
+name = "AUTH_LOCK"
+class_name = "AuthLock"
+
+[[migrations]]
+tag = "atproto-cf-auth-lock-v1"
+new_sqlite_classes = ["AuthLock"]
+```
+
+`new_sqlite_classes` works on every plan (the Free plan allows no other kind);
+the lock keeps nothing in storage either way.
+
+It costs two Durable Object requests per `getOAuthSession` (acquire and
+release), because the OAuth client takes the lock on every restore, not only on
+a refresh. A holder that never releases (an isolate that died mid-refresh) loses
+the lock after `leaseMs`, 30 seconds by default. If the Durable Object can't be
+reached, the restore goes ahead without it and logs a warning: an outage of the
+lock doesn't sign anyone out.
+
+The lock decides who refreshes; the store decides whether the next request
+sees the new tokens. Use `d1Store` with it for a guarantee. With `kvStore`, a
+request at another location may read the old tokens for up to a minute.
 
 ### Storage
 

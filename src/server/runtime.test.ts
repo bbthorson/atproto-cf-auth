@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { JoseKey } from "@atproto/jwk-jose";
+import type { RuntimeLock } from "@atproto/oauth-client";
 import { describe, expect, it } from "vitest";
 import { sessionStore, stateStore, webRuntime } from "./runtime.js";
 import { Sealer } from "./seal.js";
@@ -28,5 +29,13 @@ describe("OAuth stores over an AuthStore", () => {
     expect(Buffer.from(digest).toString("hex")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     expect((await runtime.getRandomValues(16)).length).toBe(16);
     expect((await runtime.createKey(["ES256"])).algorithms).toContain("ES256");
+  });
+});
+
+describe("the default lock", () => {
+  it("is left to the client, so it knows the lock is only local and recovers from a raced refresh", () => {
+    expect(webRuntime().requestLock).toBeUndefined();
+    const lock: RuntimeLock = (_name, fn) => fn();
+    expect(webRuntime(lock).requestLock).toBe(lock);
   });
 });

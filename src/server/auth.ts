@@ -2,7 +2,6 @@ import {
   AtprotoDohHandleResolver,
   OAuthCallbackError,
   OAuthClient,
-  requestLocalLock,
   type HandleResolver,
   type OAuthClientMetadataInput,
   type OAuthSession,
@@ -45,9 +44,11 @@ export interface BlueskyAuthOptions {
    */
   handleResolver?: HandleResolver | string | URL;
   /**
-   * Serialises token refreshes for one DID. The default only covers one
-   * isolate; that is enough until you call the PDS with `getOAuthSession`
-   * from concurrent requests, at which point pass a Durable Object-backed lock.
+   * Serialises session restores for one DID, so only one request refreshes
+   * its tokens at a time. Without one, restores are serialised within an
+   * isolate and a refresh raced by another isolate is recovered from where
+   * the store allows. Pass `durableObjectLock(env.AUTH_LOCK)` once you call
+   * the PDS with `getOAuthSession` from concurrent requests.
    */
   requestLock?: RuntimeLock;
   /** Extra client metadata shown on the consent screen. */
@@ -118,7 +119,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
   const store = options.store;
   const handleResolver =
     options.handleResolver ?? new AtprotoDohHandleResolver({ dohEndpoint: "https://cloudflare-dns.com/dns-query" });
-  const runtimeImplementation = webRuntime(options.requestLock ?? requestLocalLock);
+  const runtimeImplementation = webRuntime(options.requestLock);
   const clients = new Map<string, OAuthClient>();
 
   function clientMetadata(origin: string): OAuthClientMetadataInput {

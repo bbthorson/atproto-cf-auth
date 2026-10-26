@@ -17,9 +17,12 @@ import type { AuthStore } from "./stores/types.js";
  * base client directly means no `nodejs_compat` flag and no Node handle
  * resolver (whose undici SSRF guard throws on Workers).
  */
-export function webRuntime(requestLock: RuntimeLock): RuntimeImplementation {
+export function webRuntime(requestLock?: RuntimeLock): RuntimeImplementation {
   return {
-    requestLock,
+    // Left unset rather than defaulted: the client then locks within the
+    // isolate itself *and* knows the lock is only local, so it recovers from
+    // a refresh raced by another isolate instead of deleting the session.
+    ...(requestLock ? { requestLock } : {}),
     createKey: (algs) => JoseKey.generate(algs),
     getRandomValues: (length) => crypto.getRandomValues(new Uint8Array(length)),
     digest: async (bytes, algorithm) => {
