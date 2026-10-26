@@ -28,7 +28,7 @@ import type { RuntimeLock } from "@atproto/oauth-client";
  *
  * [[migrations]]
  * tag = "atproto-cf-auth-lock-v1"
- * new_classes = ["AuthLock"]
+ * new_sqlite_classes = ["AuthLock"]
  * ```
  */
 

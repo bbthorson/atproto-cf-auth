@@ -80,8 +80,11 @@ class_name = "AuthLock"
 
 [[migrations]]
 tag = "atproto-cf-auth-lock-v1"
-new_classes = ["AuthLock"]
+new_sqlite_classes = ["AuthLock"]
 ```
+
+`new_sqlite_classes` works on every plan (the Free plan allows no other kind);
+the lock keeps nothing in storage either way.
 
 It costs two Durable Object requests per `getOAuthSession` (acquire and
 release), because the OAuth client takes the lock on every restore, not only on
