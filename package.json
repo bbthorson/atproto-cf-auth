@@ -1,6 +1,6 @@
 {
   "name": "@bbthorson/atproto-cf-auth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bluesky (AT-Proto OAuth) sign-in for apps on Cloudflare Workers: server handlers, D1/KV session stores, and framework-free browser primitives.",
   "license": "MIT",
   "type": "module",
