@@ -16,6 +16,7 @@ import {
   type AuthErrorCode,
   type User,
 } from "../shared.js";
+import { edgeDidResolver, edgeFetch } from "./edge.js";
 import { appendSetCookie, clearCookie, readCookie, serializeCookie } from "./cookies.js";
 import { webRuntime, sessionStore, stateStore } from "./runtime.js";
 import { Sealer, toB64url } from "./seal.js";
@@ -40,7 +41,8 @@ export interface BlueskyAuthOptions {
   cookieName?: string;
   /**
    * Handle → DID resolution. Default: DNS-over-HTTPS through Cloudflare's
-   * resolver plus the `/.well-known/atproto-did` check, which works on Workers.
+   * resolver plus the `/.well-known/atproto-did` check, with a `fetch` that
+   * Workers accept for both.
    */
   handleResolver?: HandleResolver | string | URL;
   /**
@@ -118,7 +120,8 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
   const sealer = new Sealer(options.secret);
   const store = options.store;
   const handleResolver =
-    options.handleResolver ?? new AtprotoDohHandleResolver({ dohEndpoint: "https://cloudflare-dns.com/dns-query" });
+    options.handleResolver ??
+    new AtprotoDohHandleResolver({ dohEndpoint: "https://cloudflare-dns.com/dns-query", fetch: edgeFetch });
   const runtimeImplementation = webRuntime(options.requestLock);
   const clients = new Map<string, OAuthClient>();
 
@@ -164,6 +167,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
         sessionStore: sessionStore(store, sealer),
         runtimeImplementation,
         handleResolver,
+        didResolver: edgeDidResolver,
       });
       clients.set(origin, client);
     }
@@ -256,7 +260,9 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
       // only a random key travels through the PDS.
       authorizeUrl = await clientFor(url.origin).authorize(handle, { state: JSON.stringify(state) });
     } catch (err) {
-      const code: AuthErrorCode = /resolve|not found|unable to/i.test(String(err))
+      // Only a failed handle → DID lookup is the person's typo; a PDS that
+      // won't serve its OAuth metadata is ours or theirs to fix.
+      const code: AuthErrorCode = /resolve identity|unable to resolve handle/i.test(String(err))
         ? "handle_not_found"
         : "authorize_failed";
       return loginError(request, code, code === "handle_not_found" ? 400 : 502, returnTo);

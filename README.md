@@ -44,6 +44,15 @@ to the user's PDS), `sessionTtlSeconds` (default 30 days), `cookieName`,
 `metadata` (logo, terms and privacy URLs for the consent screen), `onSignIn`,
 `handleResolver` and `requestLock` (see [Lock](#lock)).
 
+**Identity lookups on Workers.** Workers refuse `redirect: "error"`, in `fetch()`
+and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
+a handle's `/.well-known/atproto-did` and a DID document. So the package ships
+its own DID resolver and gives the default handle resolver a `fetch` that sends
+`redirect: "manual"` and still refuses a redirect. If you pass your own
+`handleResolver`, give it the same treatment. Before 0.2.1, every handle
+without an `_atproto` DNS record, which is every `*.bsky.social` handle, failed
+with `handle_not_found`.
+
 **To call the user's PDS:** `const session = await auth.getOAuthSession(request)`,
 then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
 you do this from concurrent requests (two `fetch`es from one page is enough),
