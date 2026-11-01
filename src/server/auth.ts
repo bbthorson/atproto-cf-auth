@@ -1,11 +1,15 @@
+import { isAtprotoDid } from "@atproto/did";
+import { JoseKey } from "@atproto/jwk-jose";
 import {
   AtprotoDohHandleResolver,
+  Keyset,
   OAuthCallbackError,
   OAuthClient,
   type HandleResolver,
   type OAuthClientMetadataInput,
   type OAuthSession,
   type RuntimeLock,
+  type Session,
 } from "@atproto/oauth-client";
 import {
   AUTH_ERROR_MESSAGES,
@@ -20,6 +24,8 @@ import { edgeDidResolver, edgeFetch } from "./edge.js";
 import { appendSetCookie, clearCookie, readCookie, serializeCookie } from "./cookies.js";
 import { webRuntime, sessionStore, stateStore } from "./runtime.js";
 import { Sealer, toB64url } from "./seal.js";
+import { CLIENT_ASSERTION_TYPE, clientAssertion, ObtainSessionError, requestHandoff } from "./handoff.js";
+import { joinScopes, negotiateScope, type ConditionalScope } from "./scopes.js";
 import type { AuthStore } from "./stores/types.js";
 
 export interface BlueskyAuthOptions {
@@ -33,8 +39,35 @@ export interface BlueskyAuthOptions {
   basePath?: string;
   /** Where the browser lands after sign-in or sign-out, unless the sign-in named a `returnTo`. Default `/`. */
   redirectTo?: string;
-  /** OAuth scope. Default `atproto` (identity only). Add e.g. `transition:generic` to write to the PDS. */
+  /**
+   * The OAuth scope asked for at every sign-in. Default `atproto` (identity
+   * only). Add granular scopes (`repo:com.example.post`, `rpc:…?aud=…`,
+   * `space:…`) or `transition:generic` to act on the person's PDS.
+   */
   scope?: string;
+  /**
+   * Scopes asked for only when the PDS signing someone in can honour them, such
+   * as space scopes, which most PDSes don't support yet and which fail the whole
+   * sign-in where they aren't. Each is still published in the client metadata,
+   * which bounds what the client may ask for. See `pdsServesMethod`.
+   */
+  conditionalScopes?: ConditionalScope[];
+  /**
+   * Private signing keys (ES256 JWKs with a `kid`, as objects or JSON strings)
+   * that make this a confidential client: token requests are authenticated with
+   * `private_key_jwt`, and the public halves are served at
+   * `{basePath}/jwks.json`. Authorization servers give confidential clients far
+   * longer sessions. Loopback development stays a public client. Rotating keys:
+   * list the new one first and keep the old one until its sessions have
+   * refreshed.
+   */
+  privateKeys?: Array<string | Record<string, unknown>>;
+  /**
+   * The app's public origin (`https://app.example`), for work outside a request:
+   * `restore` and `obtainSession` without an `origin` of their own. The client
+   * identity is named for an origin, so these need one.
+   */
+  origin?: string;
   /** How long a sign-in lasts, in seconds. Default 30 days. */
   sessionTtlSeconds?: number;
   /** Name of the session cookie. Default `bsky_sid`. */
@@ -74,6 +107,32 @@ export interface BlueskyAuth {
    * (`new Agent(session)` from `@atproto/api`). Refreshes tokens as needed.
    */
   getOAuthSession(request: Request): Promise<OAuthSession | null>;
+  /**
+   * The OAuth session stored for `did`, outside any request: background work,
+   * or acting as an account whose session was handed over (`obtainSession`).
+   * `null` when none is stored or it can no longer be refreshed. Uses `origin`,
+   * or the `origin` option.
+   */
+  restore(did: string, opts?: { origin?: string }): Promise<OAuthSession | null>;
+  /**
+   * Accept a session for another account, handed over by that account's own
+   * authorization server outside the redirect flow: a group host creating a
+   * group account for this app, for instance.
+   *
+   * POSTs `body` as JSON to `url` the way a token request is made: with this
+   * app's `client_id` (and a client assertion when confidential), a DPoP proof
+   * for a fresh key, and `headers` (service auth from the person asking,
+   * typically). The response must hold an OAuth token response, at `session` or
+   * as the whole body. The session is kept only if `url` belongs to the
+   * account's own authorization server, so no endpoint can hand over an account
+   * it doesn't serve; it is then stored like a sign-in's, and `restore(did)`
+   * returns it. Throws `ObtainSessionError` otherwise.
+   */
+  obtainSession(
+    url: string,
+    body: Record<string, unknown>,
+    opts?: { headers?: Record<string, string>; origin?: string },
+  ): Promise<{ did: string; session: OAuthSession; response: Record<string, unknown> }>;
   /** The client metadata document served for an origin. */
   clientMetadata(origin: string): OAuthClientMetadataInput;
 }
@@ -115,6 +174,9 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
   const basePath = (options.basePath ?? "/auth").replace(/\/+$/, "");
   const redirectTo = safeReturnTo(options.redirectTo ?? "/") ?? "/";
   const scope = options.scope ?? "atproto";
+  const conditionalScopes = options.conditionalScopes ?? [];
+  // What the client may ask for: everything it ever asks for.
+  const publishedScope = joinScopes(scope, ...conditionalScopes.map((c) => c.scope));
   const sessionTtl = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
   const cookieName = options.cookieName ?? "bsky_sid";
   const sealer = new Sealer(options.secret);
@@ -124,12 +186,25 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     new AtprotoDohHandleResolver({ dohEndpoint: "https://cloudflare-dns.com/dns-query", fetch: edgeFetch });
   const runtimeImplementation = webRuntime(options.requestLock);
   const clients = new Map<string, OAuthClient>();
+  const sessions = sessionStore(store, sealer);
+  const states = stateStore(store, sealer);
+
+  // Private keys are imported once, on first use: importing is async, and a
+  // malformed key should fail the first request loudly rather than the module.
+  let keysetPromise: Promise<Keyset | undefined> | undefined;
+  function keyset(): Promise<Keyset | undefined> {
+    keysetPromise ??= loadKeyset(options.privateKeys);
+    return keysetPromise;
+  }
+
+  /** Confidential when it has keys and isn't the loopback development client. */
+  const confidential = (url: URL) => (options.privateKeys?.length ?? 0) > 0 && !isLoopback(url);
 
   function clientMetadata(origin: string): OAuthClientMetadataInput {
     const url = new URL(origin);
     const common = {
       client_name: options.appName,
-      scope,
+      scope: publishedScope,
       grant_types: ["authorization_code", "refresh_token"] as ["authorization_code", "refresh_token"],
       response_types: ["code"] as ["code"],
       token_endpoint_auth_method: "none" as const,
@@ -144,27 +219,36 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
       const redirectUri = `http://127.0.0.1${url.port ? `:${url.port}` : ""}${basePath}/callback`;
       return {
         ...common,
-        client_id: `http://localhost?redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}`,
+        client_id: `http://localhost?redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(publishedScope)}`,
         redirect_uris: [redirectUri],
       };
     }
 
     return {
       ...common,
+      ...(confidential(url)
+        ? {
+            token_endpoint_auth_method: "private_key_jwt" as const,
+            token_endpoint_auth_signing_alg: "ES256",
+            jwks_uri: `${url.origin}${basePath}/jwks.json` as `https://${string}`,
+          }
+        : {}),
       client_id: `${url.origin}${basePath}/client-metadata.json`,
       client_uri: url.origin,
       redirect_uris: [`${url.origin}${basePath}/callback`],
     };
   }
 
-  function clientFor(origin: string): OAuthClient {
+  async function clientFor(origin: string): Promise<OAuthClient> {
     let client = clients.get(origin);
     if (!client) {
+      const keys = confidential(new URL(origin)) ? await keyset() : undefined;
       client = new OAuthClient({
         responseMode: "query",
         clientMetadata: clientMetadata(origin),
-        stateStore: stateStore(store, sealer),
-        sessionStore: sessionStore(store, sealer),
+        ...(keys ? { keyset: keys } : {}),
+        stateStore: states,
+        sessionStore: sessions,
         runtimeImplementation,
         handleResolver,
         didResolver: edgeDidResolver,
@@ -172,6 +256,87 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
       clients.set(origin, client);
     }
     return client;
+  }
+
+  function originFor(explicit: string | undefined): string {
+    const origin = explicit ?? options.origin;
+    if (!origin) throw new Error("atproto-cf-auth: pass `origin`, or set the `origin` option, to act outside a request");
+    return new URL(origin).origin;
+  }
+
+  async function restore(did: string, opts: { origin?: string } = {}): Promise<OAuthSession | null> {
+    const client = await clientFor(originFor(opts.origin));
+    try {
+      return await client.restore(did);
+    } catch {
+      return null;
+    }
+  }
+
+  async function obtainSession(
+    url: string,
+    body: Record<string, unknown>,
+    opts: { headers?: Record<string, string>; origin?: string } = {},
+  ): Promise<{ did: string; session: OAuthSession; response: Record<string, unknown> }> {
+    const origin = originFor(opts.origin);
+    const client = await clientFor(origin);
+    const metadata = clientMetadata(origin);
+    const endpoint = new URL(url);
+    const keys = confidential(new URL(origin)) ? await keyset() : undefined;
+    const signingKey = keys ? [...keys][0] : undefined;
+
+    // The tokens are bound to a fresh key, as each sign-in's are.
+    const dpopKey = await JoseKey.generate(["ES256"]);
+    const payload: Record<string, unknown> = {
+      ...body,
+      client_id: metadata.client_id,
+      ...(signingKey
+        ? {
+            client_assertion_type: CLIENT_ASSERTION_TYPE,
+            client_assertion: await clientAssertion(signingKey, metadata.client_id!, endpoint.origin),
+          }
+        : {}),
+    };
+    const { tokens, response } = await requestHandoff({
+      url,
+      payload,
+      dpopKey,
+      ...(opts.headers ? { headers: opts.headers } : {}),
+    });
+
+    // Only the account's own authorization server may hand it over. The same
+    // check the client makes on every token response (`verifyIssuer`).
+    const did = tokens.sub;
+    if (!isAtprotoDid(did)) throw new ObtainSessionError("NoSession", `${did} isn't an AT Protocol DID`, 502);
+    let resolved: Awaited<ReturnType<OAuthClient["oauthResolver"]["resolveFromIdentity"]>>;
+    try {
+      resolved = await client.oauthResolver.resolveFromIdentity(did, { noCache: true, allowStale: false });
+    } catch {
+      throw new ObtainSessionError("UnresolvableAccount", `Couldn't resolve ${did} to its authorization server`, 502);
+    }
+    if (new URL(resolved.metadata.issuer).origin !== endpoint.origin) {
+      throw new ObtainSessionError("WrongAuthServer", `${endpoint.origin} is not the authorization server for ${did}`, 502);
+    }
+
+    const stored: Session = {
+      dpopKey,
+      authMethod: signingKey?.kid ? { method: "private_key_jwt", kid: signingKey.kid } : { method: "none" },
+      tokenSet: {
+        iss: resolved.metadata.issuer,
+        sub: did,
+        aud: resolved.pds.href,
+        scope: (tokens.scope ?? "atproto") as Session["tokenSet"]["scope"],
+        access_token: tokens.access_token,
+        token_type: "DPoP",
+        ...(tokens.refresh_token ? { refresh_token: tokens.refresh_token } : {}),
+        ...(tokens.expires_in !== undefined
+          ? { expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString() }
+          : {}),
+      },
+    };
+    await sessions.set(did, stored);
+    const session = await client.restore(did, false);
+    return { did, session, response };
   }
 
   async function readSession(request: Request): Promise<{ sid: string; session: StoredSession } | null> {
@@ -193,7 +358,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     const user = await getUser(request);
     if (!user) return null;
     try {
-      return await clientFor(new URL(request.url).origin).restore(user.did);
+      return await (await clientFor(new URL(request.url).origin)).restore(user.did);
     } catch {
       return null;
     }
@@ -256,9 +421,13 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     const state: FlowState = { n: nonce, ...(returnTo ? { r: returnTo } : {}) };
     let authorizeUrl: URL;
     try {
+      const client = await clientFor(url.origin);
       // `state` is kept server-side by the client and handed back by callback();
       // only a random key travels through the PDS.
-      authorizeUrl = await clientFor(url.origin).authorize(handle, { state: JSON.stringify(state) });
+      authorizeUrl = await client.authorize(handle, {
+        state: JSON.stringify(state),
+        scope: await scopeFor(client, handle),
+      });
     } catch (err) {
       // Only a failed handle → DID lookup is the person's typo; a PDS that
       // won't serve its OAuth metadata is ours or theirs to fix.
@@ -280,14 +449,30 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     return response;
   }
 
+  /**
+   * The scope to ask this person for: `scope`, plus each conditional scope
+   * whose test passes for their PDS. Without conditional scopes, no lookup. A
+   * failed lookup asks for `scope` alone; `authorize` then reports the failure.
+   */
+  async function scopeFor(client: OAuthClient, handle: string): Promise<string> {
+    if (conditionalScopes.length === 0) return scope;
+    try {
+      const { identityInfo, metadata, pds } = await client.oauthResolver.resolveFromIdentity(handle);
+      return await negotiateScope(scope, conditionalScopes, { did: identityInfo.did, pds, issuer: metadata.issuer });
+    } catch {
+      return scope;
+    }
+  }
+
   async function callback(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const nonce = readCookie(request, NONCE_COOKIE);
     const clearNonce = clearCookie(NONCE_COOKIE, { path: basePath, secure: url.protocol === "https:" });
 
+    const client = await clientFor(url.origin);
     let result: Awaited<ReturnType<OAuthClient["callback"]>>;
     try {
-      result = await clientFor(url.origin).callback(url.searchParams);
+      result = await client.callback(url.searchParams);
     } catch (err) {
       let returnTo: string | undefined;
       let code: AuthErrorCode = "callback_failed";
@@ -308,7 +493,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     const did = result.session.did;
     let handle: string | undefined;
     try {
-      const identity = await clientFor(url.origin).identityResolver.resolve(did);
+      const identity = await client.identityResolver.resolve(did);
       if (identity.handle && identity.handle !== "handle.invalid") handle = identity.handle;
     } catch {
       // The sign-in is valid without a handle; the DID is what matters.
@@ -352,6 +537,13 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
         headers: { "content-type": "application/json", "cache-control": "public, max-age=600" },
       });
     }
+    if (route === "/jwks.json" && method === "GET") {
+      const keys = confidential(url) ? await keyset() : undefined;
+      if (!keys) return null;
+      return new Response(JSON.stringify(keys.publicJwks), {
+        headers: { "content-type": "application/json", "cache-control": "public, max-age=600" },
+      });
+    }
     if (route === "/session" && method === "GET") {
       const user = await getUser(request);
       return json(user ? { authenticated: true, user } : { authenticated: false });
@@ -368,7 +560,23 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     return null;
   }
 
-  return { handle, getUser, getOAuthSession, clientMetadata };
+  return { handle, getUser, getOAuthSession, restore, obtainSession, clientMetadata };
+}
+
+/** Import the configured private keys as a keyset. Every key needs a `kid`; only ES256 is supported. */
+async function loadKeyset(privateKeys: BlueskyAuthOptions["privateKeys"]): Promise<Keyset | undefined> {
+  if (!privateKeys?.length) return undefined;
+  const keys = await Promise.all(
+    privateKeys.map(async (raw, i) => {
+      const jwk = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : raw;
+      if (typeof jwk.kid !== "string" || !jwk.kid) throw new Error(`atproto-cf-auth: privateKeys[${i}] has no kid`);
+      const key = await JoseKey.fromJWK(jwk);
+      if (!key.isPrivate) throw new Error(`atproto-cf-auth: privateKeys[${i}] (${jwk.kid}) is a public key`);
+      if (!key.algorithms.includes("ES256")) throw new Error(`atproto-cf-auth: privateKeys[${i}] (${jwk.kid}) isn't an ES256 key`);
+      return key;
+    }),
+  );
+  return new Keyset(keys);
 }
 
 /**
