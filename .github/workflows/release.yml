@@ -1,0 +1,100 @@
+name: Release
+
+# Publishes @bbthorson/atproto-cf-auth to npm when a version tag is pushed.
+#
+# To cut a release:
+#   1. bump `version` in package.json (and package-lock.json) and land it on main
+#   2. push the tag `v<version>`, e.g. v0.3.0, or create a GitHub Release for that
+#      tag from the web UI, which pushes the tag for you
+#
+# The tag must match package.json's version, so a mistyped tag can't publish the
+# wrong thing. A manual run (workflow_dispatch) runs every check and packs the
+# tarball but never publishes.
+#
+# Authentication is npm trusted publishing: npm exchanges this run's short-lived
+# GitHub OIDC token for publish rights, so no npm token is stored anywhere. It
+# needs a one-time setup on npmjs.com: the package -> Settings -> Trusted
+# Publisher -> GitHub Actions, with repository bbthorson/atproto-cf-auth and
+# workflow file `release.yml`. The filename is part of that trust policy:
+# renaming this file breaks publishing until the policy is updated to match.
+# Trusted publishing also attaches build provenance to the tarball.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm trusted publishing
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel mid-publish: npm versions are immutable, and a half-finished
+  # publish can't be redone over.
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - run: npm install -g npm@11
+
+      # The full gate again, rather than trusting CI passed on the commit this
+      # tag points at: a tag can point at a commit that never opened a PR.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Read the package
+        id: pkg
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Assert the tag matches the package version
+        if: github.ref_type == 'tag'
+        run: |
+          if [ "v${{ steps.pkg.outputs.version }}" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version ${{ steps.pkg.outputs.version }}."
+            exit 1
+          fi
+
+      # npm's own error for this is a bare 403 that reads like an auth failure.
+      - name: Assert this version is not already published
+        run: |
+          PKG="${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}"
+          if npm view "$PKG" version >/dev/null 2>&1; then
+            if [ "${{ github.ref_type }}" = "tag" ]; then
+              echo "::error::$PKG is already on npm. Versions are immutable: bump the version."
+              exit 1
+            fi
+            echo "::warning::$PKG is already on npm. A real release would stop here."
+          else
+            echo "$PKG is unclaimed."
+          fi
+
+      - name: Pack (manual runs)
+        if: github.ref_type != 'tag'
+        run: npm pack --dry-run
+
+      # No NODE_AUTH_TOKEN, by design: see the header. A prerelease version goes
+      # to the `next` dist-tag, so it never becomes what `npm install` resolves.
+      - name: Publish to npm
+        if: github.ref_type == 'tag'
+        run: |
+          VERSION="${{ steps.pkg.outputs.version }}"
+          case "$VERSION" in
+            *-*) npm publish --access public --tag next ;;
+            *)   npm publish --access public ;;
+          esac
