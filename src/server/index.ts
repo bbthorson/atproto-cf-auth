@@ -1,4 +1,12 @@
 export { createBlueskyAuth, type BlueskyAuth, type BlueskyAuthOptions } from "./auth.js";
+export {
+  joinScopes,
+  pdsServesMethod,
+  type ConditionalScope,
+  type PdsInfo,
+  type PdsServesMethodOptions,
+} from "./scopes.js";
+export { ObtainSessionError } from "./handoff.js";
 export type { AuthStore } from "./stores/types.js";
 export {
   AuthLock,

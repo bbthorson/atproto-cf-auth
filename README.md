@@ -39,10 +39,11 @@ With Astro: call `auth.handle(context.request)` from middleware or from an
 `src/pages/auth/[...route].ts` endpoint.
 
 **Options:** `basePath` (default `/auth`), `redirectTo` (default `/`), `scope`
-(default `atproto`, which proves identity only; add `transition:generic` to write
-to the user's PDS), `sessionTtlSeconds` (default 30 days), `cookieName`,
-`metadata` (logo, terms and privacy URLs for the consent screen), `onSignIn`,
-`handleResolver` and `requestLock` (see [Lock](#lock)).
+(default `atproto`, which proves identity only; see [Scopes](#scopes)),
+`conditionalScopes`, `privateKeys` (see [Confidential client](#confidential-client)),
+`origin` (see [Outside a request](#outside-a-request)), `sessionTtlSeconds`
+(default 30 days), `cookieName`, `metadata` (logo, terms and privacy URLs for the
+consent screen), `onSignIn`, `handleResolver` and `requestLock` (see [Lock](#lock)).
 
 **Identity lookups on Workers.** Workers refuse `redirect: "error"`, in `fetch()`
 and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
@@ -57,6 +58,88 @@ with `handle_not_found`.
 then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
 you do this from concurrent requests (two `fetch`es from one page is enough),
 add the lock below.
+
+### Scopes
+
+`scope` is asked for at every sign-in. To act on someone's PDS, add granular
+scopes: `repo:com.example.post` to write a collection, `rpc:com.example.method?aud=*`
+to call another service with auth their PDS signs, `space:…` for permissioned
+spaces. (`transition:generic` still works, and grants everything.)
+
+Some scopes only work on some PDSes. Space scopes asked of a PDS without spaces
+fail the whole sign-in with `invalid_scope`, not just the feature. List those as
+`conditionalScopes`: each is asked for only when its test passes for the PDS
+signing that person in.
+
+```ts
+import { pdsServesMethod } from "@bbthorson/atproto-cf-auth/server";
+
+createBlueskyAuth({
+  // ...
+  scope: "atproto repo:com.example.post",
+  conditionalScopes: [
+    {
+      scope: "space:com.example.notes?authority=*&skey=*&action=read&action=create",
+      when: pdsServesMethod("com.atproto.space.getDelegationToken"),
+    },
+  ],
+});
+```
+
+`pdsServesMethod` asks the PDS's `community.lexicon.service.describe`, a
+community convention for listing the methods a service serves, and fails the
+test (leaving the scope off) when the PDS doesn't answer. `when` can be any
+function of `{ did, pds, issuer }`.
+
+The client metadata publishes `scope` and every conditional scope, whichever a
+given sign-in asks for. That `scope` is the most the client may ever ask for, and
+some authorization servers reject a request for anything beyond it.
+
+### Confidential client
+
+Pass `privateKeys` (ES256 private JWKs, each with a `kid`) to authenticate token
+requests with `private_key_jwt`. Authorization servers give confidential clients
+much longer sessions than public ones, which matters when an app acts for people
+between their visits. The public halves are served at `{basePath}/jwks.json` and
+named in the metadata. Loopback development stays a public client.
+
+```ts
+// once: node -e "import('@atproto/jwk-jose').then(async ({JoseKey}) => console.log(JSON.stringify((await JoseKey.generate(['ES256'], 'k1')).privateJwk)))"
+createBlueskyAuth({ /* ... */ privateKeys: [env.OAUTH_PRIVATE_KEY] });
+```
+
+To rotate, put the new key first and keep the old one until its sessions have
+refreshed.
+
+### Outside a request
+
+`getOAuthSession(request)` finds the signed-in person from their cookie. For
+work with no request (a queue consumer, a scheduled job), use
+`await auth.restore(did)`, which returns the stored session for that DID, or
+`null`. The client identity is named for an origin, so set the `origin` option
+(`https://app.example`) or pass `{ origin }`.
+
+### Sessions handed over
+
+Some authorization servers hand an app a session for another account outside
+the redirect flow: a group host creating a group account for the app, say.
+
+```ts
+const { did, session, response } = await auth.obtainSession(
+  "https://groups.example/xrpc/fyi.opensocial.provisionGroup",
+  { handle: "thornwood", displayName: "Thornwood" },
+  { headers: { authorization: `Bearer ${serviceAuthFromTheFounder}` } },
+);
+```
+
+It POSTs the body as JSON the way a token request is made: with the app's
+`client_id` (and a client assertion when confidential) and a DPoP proof for a
+fresh key, answering one nonce challenge. The response must hold an OAuth token
+response at `session` or as its whole body. The session is kept only if the
+endpoint belongs to the account's own authorization server, then stored like a
+sign-in's, so `restore(did)` returns it from then on. Otherwise it throws
+`ObtainSessionError`, whose `error` is the endpoint's code or `NoSession`,
+`WrongAuthServer` or `UnresolvableAccount`.
 
 ### Lock
 
