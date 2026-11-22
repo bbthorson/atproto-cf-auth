@@ -30,9 +30,13 @@ import { joinScopes, negotiateScope, type ConditionalScope } from "./scopes.js";
 import type { AuthStore } from "./stores/types.js";
 
 export interface AtprotoAuthOptions {
-  /** Shown on the Bluesky consent screen. */
-  appName: string;
-  /** Where sessions and in-flight sign-ins live: `d1Store`, `kvStore` or `memoryStore`. */
+  /**
+   * Shown on the authorization server's consent screen. A function gets the
+   * origin the client is named for, for one deploy serving several (an app and
+   * its admin console, say) under different names.
+   */
+  appName: string | ((origin: string) => string);
+  /** Where sessions and in-flight sign-ins live: `d1Store`, `kvStore`, `postgresStore` or `memoryStore`. */
   store: AuthStore;
   /** Seals everything written to `store`. A Worker secret of 32+ random characters. */
   secret: string;
@@ -365,7 +369,7 @@ export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
   function clientMetadata(origin: string): OAuthClientMetadataInput {
     const url = new URL(origin);
     const common = {
-      client_name: options.appName,
+      client_name: typeof options.appName === "function" ? options.appName(url.origin) : options.appName,
       scope: publishedScope,
       grant_types: ["authorization_code", "refresh_token"] as ["authorization_code", "refresh_token"],
       response_types: ["code"] as ["code"],
