@@ -3,7 +3,7 @@ import { toB64url } from "./seal.js";
 
 /**
  * The wire half of accepting a session handed over outside the redirect flow
- * (`BlueskyAuth.obtainSession`): a JSON POST to an authorization server's own
+ * (`AtprotoAuth.obtainSession`): a JSON POST to an authorization server's own
  * endpoint, made the way a token request is made. The client authenticates as
  * itself (its `client_id`, and a signed assertion when it is confidential) and
  * proves possession of the key the tokens will be bound to (DPoP, answering

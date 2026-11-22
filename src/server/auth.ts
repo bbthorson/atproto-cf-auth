@@ -16,6 +16,7 @@ import {
   AUTH_ERROR_PARAM,
   isValidHandle,
   normalizeHandle,
+  normalizeServer,
   safeReturnTo,
   type AuthErrorCode,
   type User,
@@ -28,7 +29,7 @@ import { CLIENT_ASSERTION_TYPE, clientAssertion, ObtainSessionError, requestHand
 import { joinScopes, negotiateScope, type ConditionalScope } from "./scopes.js";
 import type { AuthStore } from "./stores/types.js";
 
-export interface BlueskyAuthOptions {
+export interface AtprotoAuthOptions {
   /** Shown on the Bluesky consent screen. */
   appName: string;
   /** Where sessions and in-flight sign-ins live: `d1Store`, `kvStore` or `memoryStore`. */
@@ -88,11 +89,153 @@ export interface BlueskyAuthOptions {
   requestLock?: RuntimeLock;
   /** Extra client metadata shown on the consent screen. */
   metadata?: Pick<OAuthClientMetadataInput, "logo_uri" | "tos_uri" | "policy_uri">;
-  /** Called once per successful sign-in, before the redirect. */
-  onSignIn?: (user: User, request: Request) => void | Promise<void>;
+  /**
+   * `"session"` (default): the library keeps a signed-in session (its cookie,
+   * `getUser`, `/session`, `/logout`) and the OAuth tokens, for calling the
+   * person's PDS.
+   *
+   * `"identity"`: the library only proves who signed in. It hands the verified
+   * DID to `onSignIn`, which issues the app's own session; it sets no cookie,
+   * serves no `/session` or `/logout`, and revokes the OAuth tokens as soon as
+   * the sign-in is verified, so nothing that can act on the account is kept.
+   * For apps that already have sessions and only need "this person controls
+   * this DID".
+   */
+  mode?: "session" | "identity";
+  /**
+   * Further callback paths under `basePath`, besides `/callback`, such as
+   * `/callback/mobile`. Each is a registered redirect URI and handled by
+   * `handle()`. Pick one per sign-in with `authorize`'s `callbackPath`, when
+   * flows need telling apart before their state is read (a native app's
+   * universal link, a separate route in front of the Worker).
+   */
+  callbackPaths?: string[];
+  /**
+   * Servers `POST {basePath}/login` may start a sign-up at, when the body says
+   * `signUp: true`. The first is the default; a request may name another only
+   * if it's on this list. Default `["https://bsky.social"]`; `[]` turns sign-up
+   * off on that route (`authorize` takes any server the app passes).
+   */
+  signUpServers?: string[];
+  /**
+   * Called once per successful sign-in, before the redirect, with the flow's
+   * `context` and `returnTo`. Return a `Response` to answer the callback
+   * yourself (in `"identity"` mode, this is where the app sets its own session
+   * cookie); return nothing for the default redirect. A throw fails the
+   * sign-in as `callback_failed`.
+   */
+  onSignIn?: (event: SignInEvent) => void | Response | Promise<void | Response>;
+  /**
+   * Called when a callback fails, with the flow when it could be read. Return a
+   * `Response` to report the failure your own way (your error page, a native
+   * app's deep link); return nothing for the default redirect with
+   * `?auth_error=<code>`.
+   */
+  onSignInError?: (event: SignInErrorEvent) => void | Response | Promise<void | Response>;
 }
 
-export interface BlueskyAuth {
+/** What `onSignIn` is told. */
+export interface SignInEvent {
+  /** Who signed in: the DID the authorization server vouched for, and its handle when it resolves. */
+  user: User;
+  /** The callback request. */
+  request: Request;
+  flow: SignInFlow;
+}
+
+/** What `onSignInError` is told. */
+export interface SignInErrorEvent {
+  code: AuthErrorCode;
+  /** What was thrown, when something was. */
+  cause?: unknown;
+  request: Request;
+  /** The flow, when its state could be read. A failure before that (a bad or replayed code) has none. */
+  flow?: SignInFlow;
+}
+
+/** What an app attached to a sign-in when it started, handed back when it ends. */
+export interface SignInFlow {
+  /** The `context` passed to `authorize`. Stored server-side (sealed), never sent through the browser. */
+  context?: unknown;
+  /** Same-site path the sign-in asked to return to. */
+  returnTo?: string;
+  /** The callback path, under `basePath`, this sign-in was sent to. */
+  callbackPath: string;
+}
+
+/**
+ * Who to sign in: an account (`handle`), or a server to start at (`server`),
+ * which is how a sign-up begins. Exactly one of the two.
+ */
+export type AuthorizeInput = AuthorizeTarget & AuthorizeOptions;
+
+export type AuthorizeTarget =
+  | {
+      /** What the person typed: a handle or DID. Normalised and checked here. */
+      handle: string;
+      server?: never;
+    }
+  | {
+      /**
+       * An authorization server or PDS to start at, such as
+       * `https://bsky.social`, for someone without an account (with `prompt:
+       * "create"`) or who doesn't know their handle. `bsky.social` works too;
+       * only https is accepted. The app chooses it: never pass a server straight
+       * from a request without checking it against a list, or a browser can make
+       * your Worker fetch any URL's metadata.
+       */
+      server: string;
+      handle?: never;
+    };
+
+export interface AuthorizeOptions {
+  /**
+   * Passed to the authorization server. `"create"` asks for its sign-up page
+   * (checked first against the `prompt_values_supported` it publishes: if it
+   * doesn't list `create`, the result is `sign_up_unavailable` and the person
+   * stays on your page). `"login"` asks it to sign in again even with a session,
+   * `"select_account"` to let the person pick an account.
+   */
+  prompt?: "login" | "select_account" | "consent" | "create";
+  /** Same-site path to land on afterwards. Anything else is dropped. */
+  returnTo?: string;
+  /**
+   * Anything JSON-serialisable to carry to `onSignIn` / `onSignInError`: which
+   * of the app's flows this is, a verifier a native app will present later.
+   * Kept with the OAuth state on the server (sealed in the store), so it may
+   * hold secrets. Keep it small.
+   */
+  context?: unknown;
+  /** `/callback` (default) or one of `callbackPaths`. */
+  callbackPath?: string;
+  /**
+   * Default true: tie the callback to this browser with a nonce cookie, which
+   * is what stops login CSRF (someone finishing their own sign-in in your
+   * browser). Turn it off only when the flow can't keep a cookie, such as a
+   * native app handing off to the system browser, and bind it yourself through
+   * `context` (a verifier only the starting app holds, checked in `onSignIn`).
+   */
+  bindToBrowser?: boolean;
+}
+
+export type AuthorizeResult =
+  | {
+      ok: true;
+      /** The authorization server's page to send the browser to. */
+      url: string;
+      /** `Set-Cookie` values to put on whatever response sends the browser there. */
+      cookies: string[];
+    }
+  | { ok: false; error: AuthErrorCode; status: number };
+
+export interface AtprotoAuth {
+  /**
+   * Start a sign-in from your own route: what `POST {basePath}/login` does,
+   * plus `context`, a callback path and an unbound flow. Answer with
+   * `result.url` however your API does, and put `result.cookies` on that
+   * response.
+   */
+  authorize(request: Request, input: AuthorizeInput): Promise<AuthorizeResult>;
   /**
    * Handles `GET {basePath}/client-metadata.json`, `GET {basePath}/session`,
    * `POST {basePath}/login`, `GET {basePath}/callback` and
@@ -145,10 +288,14 @@ interface StoredSession {
 }
 
 interface FlowState {
-  /** Binds the callback to the browser that started the flow. */
-  n: string;
+  /** Binds the callback to the browser that started the flow. Absent for an unbound flow. */
+  n?: string;
   /** Same-site path to return to. */
   r?: string;
+  /** The app's context. */
+  c?: unknown;
+  /** Callback path, when not `/callback`. */
+  p?: string;
 }
 
 const NONCE_COOKIE = "bsky_auth_nonce";
@@ -170,7 +317,7 @@ function randomId(): string {
  * domain, 127.0.0.1 in development): the OAuth client_id and redirect_uri are
  * derived from the request's origin, so each origin names itself correctly.
  */
-export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
+export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
   const basePath = (options.basePath ?? "/auth").replace(/\/+$/, "");
   const redirectTo = safeReturnTo(options.redirectTo ?? "/") ?? "/";
   const scope = options.scope ?? "atproto";
@@ -178,6 +325,21 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
   // What the client may ask for: everything it ever asks for.
   const publishedScope = joinScopes(scope, ...conditionalScopes.map((c) => c.scope));
   const sessionTtl = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
+  const identityOnly = options.mode === "identity";
+  const signUpServers = (options.signUpServers ?? ["https://bsky.social"]).map((raw) => {
+    const server = normalizeServer(raw);
+    if (!server) throw new Error(`atproto-cf-auth: invalid sign-up server ${JSON.stringify(raw)}`);
+    return server;
+  });
+  const callbackPaths = ["/callback"];
+  for (const raw of options.callbackPaths ?? []) {
+    const path = `/${raw.replace(/^\/+|\/+$/g, "")}`;
+    const segments = path.slice(1).split("/");
+    if (!/^\/[A-Za-z0-9._~\/-]+$/.test(path) || segments.some((seg) => seg === "" || seg === "." || seg === "..")) {
+      throw new Error(`atproto-cf-auth: invalid callback path ${JSON.stringify(raw)}`);
+    }
+    if (!callbackPaths.includes(path)) callbackPaths.push(path);
+  }
   const cookieName = options.cookieName ?? "bsky_sid";
   const sealer = new Sealer(options.secret);
   const store = options.store;
@@ -216,11 +378,13 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     if (isLoopback(url)) {
       // AT-Proto's development client: no hosted metadata, and the redirect
       // must use the loopback IP rather than "localhost".
-      const redirectUri = `http://127.0.0.1${url.port ? `:${url.port}` : ""}${basePath}/callback`;
+      const loopback = `http://127.0.0.1${url.port ? `:${url.port}` : ""}${basePath}`;
+      const redirectUris = callbackPaths.map((path) => `${loopback}${path}`);
+      const query = redirectUris.map((uri) => `redirect_uri=${encodeURIComponent(uri)}`).join("&");
       return {
         ...common,
-        client_id: `http://localhost?redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(publishedScope)}`,
-        redirect_uris: [redirectUri],
+        client_id: `http://localhost?${query}&scope=${encodeURIComponent(publishedScope)}`,
+        redirect_uris: redirectUris as [string, ...string[]],
       };
     }
 
@@ -235,7 +399,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
         : {}),
       client_id: `${url.origin}${basePath}/client-metadata.json`,
       client_uri: url.origin,
-      redirect_uris: [`${url.origin}${basePath}/callback`],
+      redirect_uris: callbackPaths.map((path) => `${url.origin}${basePath}${path}`) as [string, ...string[]],
     };
   }
 
@@ -348,6 +512,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
   }
 
   async function getUser(request: Request): Promise<User | null> {
+    if (identityOnly) return null;
     const found = await readSession(request);
     if (!found) return null;
     const { did, handle, signedInAt } = found.session;
@@ -396,37 +561,63 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
 
   // --- routes --------------------------------------------------------------------
 
-  async function login(request: Request): Promise<Response> {
+  /** The registered redirect URI for a callback path. */
+  function redirectUriFor(client: OAuthClient, callbackPath: string) {
+    return client.clientMetadata.redirect_uris.find((uri) => new URL(uri).pathname === `${basePath}${callbackPath}`);
+  }
+
+  async function authorize(request: Request, input: AuthorizeInput): Promise<AuthorizeResult> {
     const url = new URL(request.url);
-    let rawHandle: unknown;
-    let rawReturnTo: unknown;
-    if (isFormPost(request)) {
-      const form = await request.formData();
-      rawHandle = form.get("handle");
-      rawReturnTo = form.get("returnTo");
-    } else {
-      const body = (await request.json().catch(() => null)) as { handle?: unknown; returnTo?: unknown } | null;
-      rawHandle = body?.handle;
-      rawReturnTo = body?.returnTo;
-    }
-    const returnTo = safeReturnTo(rawReturnTo);
-
     // The nonce cookie set here must come back on the redirect to 127.0.0.1.
-    if (url.hostname === "localhost") return loginError(request, "use_loopback_ip", 400, returnTo);
+    if (url.hostname === "localhost") return { ok: false, error: "use_loopback_ip", status: 400 };
 
-    const handle = typeof rawHandle === "string" ? normalizeHandle(rawHandle) : "";
-    if (!isValidHandle(handle)) return loginError(request, "invalid_handle", 400, returnTo);
+    // Who: an account (handle or DID), or a server to start at.
+    let target: string;
+    let isServer = false;
+    if (typeof input.server === "string") {
+      const server = normalizeServer(input.server);
+      if (!server) return { ok: false, error: "invalid_server", status: 400 };
+      target = server;
+      isServer = true;
+    } else {
+      target = normalizeHandle(input.handle ?? "");
+      if (!isValidHandle(target)) return { ok: false, error: "invalid_handle", status: 400 };
+    }
+    const prompt = input.prompt;
 
-    const nonce = randomId();
-    const state: FlowState = { n: nonce, ...(returnTo ? { r: returnTo } : {}) };
+    const callbackPath = input.callbackPath ?? "/callback";
+    if (!callbackPaths.includes(callbackPath)) {
+      throw new Error(`atproto-cf-auth: ${callbackPath} isn't a callback path; add it to \`callbackPaths\``);
+    }
+    const returnTo = safeReturnTo(input.returnTo);
+    const bind = input.bindToBrowser ?? true;
+    const nonce = bind ? randomId() : undefined;
+    const state: FlowState = {
+      ...(nonce ? { n: nonce } : {}),
+      ...(returnTo ? { r: returnTo } : {}),
+      ...(input.context !== undefined ? { c: input.context } : {}),
+      ...(callbackPath !== "/callback" ? { p: callbackPath } : {}),
+    };
+
     let authorizeUrl: URL;
     try {
       const client = await clientFor(url.origin);
+      const redirectUri = redirectUriFor(client, callbackPath);
+      if (prompt === "create") {
+        // Send nobody to a sign-up page the server says it doesn't have.
+        const { metadata } = await client.oauthResolver.resolve(target);
+        if (!metadata.prompt_values_supported?.includes("create")) {
+          return { ok: false, error: "sign_up_unavailable", status: 400 };
+        }
+      }
       // `state` is kept server-side by the client and handed back by callback();
       // only a random key travels through the PDS.
-      authorizeUrl = await client.authorize(handle, {
+      authorizeUrl = await client.authorize(target, {
         state: JSON.stringify(state),
-        scope: await scopeFor(client, handle),
+        // A server has no account to test conditional scopes against yet.
+        scope: isServer ? scope : await scopeFor(client, target),
+        ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+        ...(prompt ? { prompt } : {}),
       });
     } catch (err) {
       // Only a failed handle → DID lookup is the person's typo; a PDS that
@@ -434,18 +625,47 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
       const code: AuthErrorCode = /resolve identity|unable to resolve handle/i.test(String(err))
         ? "handle_not_found"
         : "authorize_failed";
-      return loginError(request, code, code === "handle_not_found" ? 400 : 502, returnTo);
+      return { ok: false, error: code, status: code === "handle_not_found" ? 400 : 502 };
     }
 
-    const response = isFormPost(request) ? redirect(authorizeUrl.toString()) : json({ url: authorizeUrl.toString() });
-    appendSetCookie(
-      response,
-      serializeCookie(NONCE_COOKIE, nonce, {
-        path: basePath,
-        maxAge: NONCE_TTL_SECONDS,
-        secure: url.protocol === "https:",
-      }),
-    );
+    const cookies = nonce
+      ? [serializeCookie(NONCE_COOKIE, nonce, { path: basePath, maxAge: NONCE_TTL_SECONDS, secure: url.protocol === "https:" })]
+      : [];
+    return { ok: true, url: authorizeUrl.toString(), cookies };
+  }
+
+  async function login(request: Request): Promise<Response> {
+    let fields: { handle?: unknown; returnTo?: unknown; signUp?: unknown; server?: unknown } | null;
+    if (isFormPost(request)) {
+      const form = await request.formData();
+      fields = {
+        handle: form.get("handle"),
+        returnTo: form.get("returnTo"),
+        signUp: form.get("signUp"),
+        server: form.get("server"),
+      };
+    } else {
+      const body: unknown = await request.json().catch(() => null);
+      fields = typeof body === "object" && body !== null ? (body as typeof fields) : null;
+    }
+    const returnTo = safeReturnTo(fields?.returnTo);
+    const common = returnTo ? { returnTo } : {};
+
+    let result: AuthorizeResult;
+    const signUp = fields?.signUp === true || fields?.signUp === "1" || fields?.signUp === "true";
+    if (signUp) {
+      // Only a listed server: anything else would let a browser make this
+      // Worker fetch whatever URL it names.
+      const requested = typeof fields?.server === "string" && fields.server ? normalizeServer(fields.server) : signUpServers[0];
+      if (signUpServers.length === 0) return loginError(request, "sign_up_unavailable", 400, returnTo);
+      if (!requested || !signUpServers.includes(requested)) return loginError(request, "invalid_server", 400, returnTo);
+      result = await authorize(request, { server: requested, prompt: "create", ...common });
+    } else {
+      result = await authorize(request, { handle: typeof fields?.handle === "string" ? fields.handle : "", ...common });
+    }
+    if (!result.ok) return loginError(request, result.error, result.status, returnTo);
+    const response = isFormPost(request) ? redirect(result.url) : json({ url: result.url });
+    for (const cookie of result.cookies) appendSetCookie(response, cookie);
     return response;
   }
 
@@ -464,30 +684,52 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     }
   }
 
-  async function callback(request: Request): Promise<Response> {
+  async function callback(request: Request, callbackPath: string): Promise<Response> {
     const url = new URL(request.url);
     const nonce = readCookie(request, NONCE_COOKIE);
     const clearNonce = clearCookie(NONCE_COOKIE, { path: basePath, secure: url.protocol === "https:" });
 
+    const fail = async (code: AuthErrorCode, state: FlowState | undefined, cause?: unknown): Promise<Response> => {
+      const flow = state ? flowOf(state) : undefined;
+      let response: Response | void;
+      try {
+        response = await options.onSignInError?.({
+          code,
+          request,
+          ...(cause !== undefined ? { cause } : {}),
+          ...(flow ? { flow } : {}),
+        });
+      } catch {
+        response = undefined;
+      }
+      return withCookie(response ?? errorRedirect(request, code, state?.r), clearNonce);
+    };
+
     const client = await clientFor(url.origin);
     let result: Awaited<ReturnType<OAuthClient["callback"]>>;
     try {
-      result = await client.callback(url.searchParams);
+      // The token request names the redirect URI the sign-in was sent to; the
+      // authorization server refuses the code for any other.
+      const redirectUri = redirectUriFor(client, callbackPath);
+      result = await client.callback(url.searchParams, redirectUri ? { redirect_uri: redirectUri } : {});
     } catch (err) {
-      let returnTo: string | undefined;
+      let state: FlowState | undefined;
       let code: AuthErrorCode = "callback_failed";
       if (err instanceof OAuthCallbackError) {
-        returnTo = parseState(err.state)?.r;
+        state = parseState(err.state);
         if (err.params.get("error") === "access_denied") code = "access_denied";
       }
-      return withCookie(errorRedirect(request, code, returnTo), clearNonce);
+      return fail(code, state, err);
     }
 
     const state = parseState(result.state);
-    if (!nonce || !state || state.n !== nonce) {
+    // A bound flow must come back to the browser that started it, and every
+    // flow to the callback path it was sent to.
+    const browserOk = state && (state.n === undefined || (nonce !== undefined && state.n === nonce));
+    if (!state || !browserOk || (state.p ?? "/callback") !== callbackPath) {
       // A valid code, but not for this browser: drop what it minted.
       await result.session.signOut().catch(() => undefined);
-      return withCookie(errorRedirect(request, "browser_mismatch", state?.r), clearNonce);
+      return fail("browser_mismatch", state);
     }
 
     const did = result.session.did;
@@ -498,23 +740,31 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     } catch {
       // The sign-in is valid without a handle; the DID is what matters.
     }
+    // Identity only: the sign-in has proved the DID, and the tokens would
+    // only be something to leak. Revoked at the authorization server and
+    // deleted from the store.
+    if (identityOnly) await result.session.signOut().catch(() => undefined);
 
-    const sid = randomId();
     const signedInAt = new Date().toISOString();
-    const stored: StoredSession = {
-      did,
-      signedInAt,
-      expiresAt: Date.now() + sessionTtl * 1000,
-      ...(handle ? { handle } : {}),
-    };
-    await store.set(`sid:${sid}`, await sealer.seal(stored), sessionTtl);
-    await options.onSignIn?.({ did, signedInAt, ...(handle ? { handle } : {}) }, request);
+    const user: User = { did, signedInAt, ...(handle ? { handle } : {}) };
+    let response: Response | void;
+    try {
+      response = await options.onSignIn?.({ user, request, flow: flowOf(state) });
+    } catch (err) {
+      return fail("callback_failed", state, err);
+    }
+    response ??= redirect(state.r ?? redirectTo);
 
-    const response = redirect(state.r ?? redirectTo);
-    appendSetCookie(
-      response,
-      serializeCookie(cookieName, sid, { path: "/", maxAge: sessionTtl, secure: url.protocol === "https:" }),
-    );
+    // The library's own session, written only once the app accepted the sign-in.
+    if (!identityOnly) {
+      const sid = randomId();
+      const stored: StoredSession = { ...user, expiresAt: Date.now() + sessionTtl * 1000 };
+      await store.set(`sid:${sid}`, await sealer.seal(stored), sessionTtl);
+      appendSetCookie(
+        response,
+        serializeCookie(cookieName, sid, { path: "/", maxAge: sessionTtl, secure: url.protocol === "https:" }),
+      );
+    }
     return withCookie(response, clearNonce);
   }
 
@@ -544,6 +794,8 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
         headers: { "content-type": "application/json", "cache-control": "public, max-age=600" },
       });
     }
+    if (callbackPaths.includes(route) && method === "GET") return callback(request, route);
+    if (identityOnly) return null;
     if (route === "/session" && method === "GET") {
       const user = await getUser(request);
       return json(user ? { authenticated: true, user } : { authenticated: false });
@@ -552,7 +804,6 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
       if (!sameOrigin(request)) return json({ error: "forbidden" }, 403);
       return login(request);
     }
-    if (route === "/callback" && method === "GET") return callback(request);
     if (route === "/logout" && method === "POST") {
       if (!sameOrigin(request)) return json({ error: "forbidden" }, 403);
       return logout(request);
@@ -560,11 +811,11 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     return null;
   }
 
-  return { handle, getUser, getOAuthSession, restore, obtainSession, clientMetadata };
+  return { handle, authorize, getUser, getOAuthSession, restore, obtainSession, clientMetadata };
 }
 
 /** Import the configured private keys as a keyset. Every key needs a `kid`; only ES256 is supported. */
-async function loadKeyset(privateKeys: BlueskyAuthOptions["privateKeys"]): Promise<Keyset | undefined> {
+async function loadKeyset(privateKeys: AtprotoAuthOptions["privateKeys"]): Promise<Keyset | undefined> {
   if (!privateKeys?.length) return undefined;
   const keys = await Promise.all(
     privateKeys.map(async (raw, i) => {
@@ -591,13 +842,29 @@ function sameOrigin(request: Request): boolean {
 function parseState(raw: string | null | undefined): FlowState | undefined {
   if (!raw) return undefined;
   try {
-    const value = JSON.parse(raw) as Partial<FlowState>;
-    if (typeof value.n !== "string") return undefined;
-    const r = safeReturnTo(value.r);
-    return { n: value.n, ...(r ? { r } : {}) };
+    const value: unknown = JSON.parse(raw);
+    if (typeof value !== "object" || value === null) return undefined;
+    const { n, r, c, p } = value as Record<string, unknown>;
+    if (n !== undefined && typeof n !== "string") return undefined;
+    if (p !== undefined && typeof p !== "string") return undefined;
+    const returnTo = safeReturnTo(r);
+    return {
+      ...(n !== undefined ? { n } : {}),
+      ...(returnTo ? { r: returnTo } : {}),
+      ...(c !== undefined ? { c } : {}),
+      ...(p !== undefined ? { p } : {}),
+    };
   } catch {
     return undefined;
   }
+}
+
+function flowOf(state: FlowState): SignInFlow {
+  return {
+    callbackPath: state.p ?? "/callback",
+    ...(state.c !== undefined ? { context: state.c } : {}),
+    ...(state.r ? { returnTo: state.r } : {}),
+  };
 }
 
 function withCookie(response: Response, cookie: string): Response {

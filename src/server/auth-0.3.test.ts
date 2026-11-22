@@ -1,7 +1,7 @@
 import { JoseKey } from "@atproto/jwk-jose";
 import { OAuthClient } from "@atproto/oauth-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBlueskyAuth } from "./auth.js";
+import { createAtprotoAuth } from "./auth.js";
 import { ObtainSessionError } from "./handoff.js";
 import { webRuntime } from "./runtime.js";
 import { memoryStore } from "./stores/memory.js";
@@ -18,8 +18,8 @@ const GROUP = "did:plc:abcdefghijklmnopqrstuvwx";
 const HOST = "https://host.example";
 const ENDPOINT = `${HOST}/xrpc/fyi.opensocial.provisionGroup`;
 
-function makeAuth(overrides: Partial<Parameters<typeof createBlueskyAuth>[0]> = {}) {
-  return createBlueskyAuth({ appName: "Test App", store: memoryStore(), secret: SECRET, origin: ORIGIN, ...overrides });
+function makeAuth(overrides: Partial<Parameters<typeof createAtprotoAuth>[0]> = {}) {
+  return createAtprotoAuth({ appName: "Test App", store: memoryStore(), secret: SECRET, origin: ORIGIN, ...overrides });
 }
 
 /**
@@ -157,7 +157,7 @@ describe("confidential client", () => {
 
 describe("restore", () => {
   it("needs an origin outside a request", async () => {
-    const auth = createBlueskyAuth({ appName: "Test App", store: memoryStore(), secret: SECRET });
+    const auth = createAtprotoAuth({ appName: "Test App", store: memoryStore(), secret: SECRET });
     await expect(auth.restore("did:plc:alice")).rejects.toThrow(/origin/);
   });
 

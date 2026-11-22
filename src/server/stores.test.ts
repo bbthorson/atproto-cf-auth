@@ -1,9 +1,11 @@
+import { PGlite } from "@electric-sql/pglite";
 import { describe, expect, it } from "vitest";
 import { sqliteD1 } from "../test/sqlite-d1.js";
 import { Sealer } from "./seal.js";
 import { d1Store } from "./stores/d1.js";
 import { kvStore, type KVNamespaceLike } from "./stores/kv.js";
 import { memoryStore } from "./stores/memory.js";
+import { postgresStore } from "./stores/postgres.js";
 import type { AuthStore } from "./stores/types.js";
 
 function fakeKv(): KVNamespaceLike & { ttls: Map<string, number | undefined> } {
@@ -25,6 +27,13 @@ function fakeKv(): KVNamespaceLike & { ttls: Map<string, number | undefined> } {
 describe.each<[string, (now: () => number) => AuthStore]>([
   ["d1Store", (now) => d1Store(sqliteD1(), { now })],
   ["memoryStore", (now) => memoryStore(now)],
+  [
+    "postgresStore",
+    (now) => {
+      const db = new PGlite();
+      return postgresStore((text, params) => db.query(text, params), { now });
+    },
+  ],
 ])("%s", (_name, make) => {
   it("gets, sets, overwrites, deletes and expires", async () => {
     let t = 1_000_000;
@@ -52,6 +61,36 @@ describe("d1Store", () => {
     const count = await db.prepare("SELECT COUNT(*) AS n FROM bsky_auth").first<{ n: number }>();
     expect(count?.n).toBe(1);
     expect(() => d1Store(db, { table: "x; DROP TABLE y" })).toThrow();
+  });
+});
+
+describe("postgresStore", () => {
+  it("sweeps expired rows when a sign-in starts, and rejects odd table names", async () => {
+    let t = 0;
+    const db = new PGlite();
+    const store = postgresStore((text, params) => db.query(text, params), { now: () => t });
+    await store.set("state:old", "x", 1);
+    t = 5_000;
+    await store.set("state:new", "y", 60);
+    const { rows } = await db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM bsky_auth");
+    expect(rows[0]?.n).toBe(1);
+    expect(() => postgresStore(async () => [], { table: "x; DROP TABLE y" })).toThrow();
+  });
+
+  it("uses a table migrations own, and takes rows as a bare array (Neon's shape)", async () => {
+    const db = new PGlite();
+    await db.exec("CREATE SCHEMA auth; CREATE TABLE auth.sessions (key text PRIMARY KEY, value text NOT NULL, expires_at bigint NOT NULL)");
+    const seen: string[] = [];
+    const store = postgresStore(
+      async (text, params) => {
+        seen.push(text);
+        return (await db.query(text, params)).rows;
+      },
+      { table: "auth.sessions", createTable: false },
+    );
+    await store.set("sid:a", "v", 60);
+    expect(await store.get("sid:a")).toBe("v");
+    expect(seen.some((q) => q.includes("CREATE TABLE"))).toBe(false);
   });
 });
 

@@ -1,4 +1,15 @@
-export { createBlueskyAuth, type BlueskyAuth, type BlueskyAuthOptions } from "./auth.js";
+export {
+  createAtprotoAuth,
+  type AuthorizeInput,
+  type AuthorizeOptions,
+  type AuthorizeTarget,
+  type AuthorizeResult,
+  type AtprotoAuth,
+  type AtprotoAuthOptions,
+  type SignInErrorEvent,
+  type SignInEvent,
+  type SignInFlow,
+} from "./auth.js";
 export {
   joinScopes,
   pdsServesMethod,
@@ -17,6 +28,7 @@ export {
 export { d1Store, type D1DatabaseLike, type D1PreparedStatementLike } from "./stores/d1.js";
 export { kvStore, type KVNamespaceLike } from "./stores/kv.js";
 export { memoryStore } from "./stores/memory.js";
+export { postgresStore, type PostgresStoreOptions, type SqlQuery } from "./stores/postgres.js";
 export {
   AUTH_ERROR_MESSAGES,
   AUTH_ERROR_PARAM,
@@ -24,6 +36,7 @@ export {
   isAuthErrorCode,
   isValidHandle,
   normalizeHandle,
+  normalizeServer,
   type AuthErrorCode,
   type User,
 } from "../shared.js";

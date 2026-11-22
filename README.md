@@ -11,13 +11,13 @@ Worker.
 ## Server
 
 ```ts
-import { createBlueskyAuth, d1Store } from "@bbthorson/atproto-cf-auth/server";
+import { createAtprotoAuth, d1Store } from "@bbthorson/atproto-cf-auth/server";
 
-let auth: ReturnType<typeof createBlueskyAuth> | undefined;
+let auth: ReturnType<typeof createAtprotoAuth> | undefined;
 
 export default {
   async fetch(request: Request, env: Env) {
-    auth ??= createBlueskyAuth({
+    auth ??= createAtprotoAuth({
       appName: "Bardcast",
       store: d1Store(env.DB),       // or kvStore(env.KV)
       secret: env.SESSION_SECRET,   // Worker secret, 32+ random characters
@@ -43,7 +43,9 @@ With Astro: call `auth.handle(context.request)` from middleware or from an
 `conditionalScopes`, `privateKeys` (see [Confidential client](#confidential-client)),
 `origin` (see [Outside a request](#outside-a-request)), `sessionTtlSeconds`
 (default 30 days), `cookieName`, `metadata` (logo, terms and privacy URLs for the
-consent screen), `onSignIn`, `handleResolver` and `requestLock` (see [Lock](#lock)).
+consent screen), `mode`, `callbackPaths`, `onSignIn` and `onSignInError` (see
+[Identity only](#identity-only)), `signUpServers` (see [Sign-up](#sign-up)),
+`handleResolver` and `requestLock` (see [Lock](#lock)).
 
 **Identity lookups on Workers.** Workers refuse `redirect: "error"`, in `fetch()`
 and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
@@ -58,6 +60,111 @@ with `handle_not_found`.
 then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
 you do this from concurrent requests (two `fetch`es from one page is enough),
 add the lock below.
+
+### Identity only
+
+Apps that already have sessions of their own often need only one thing from
+AT-Proto: proof that this person controls this DID. Set `mode: "identity"` and
+the library proves it, then hands over. It keeps nothing: it sets no session
+cookie, serves no `/session` or `/logout`, and revokes the OAuth tokens as soon
+as the sign-in is verified.
+
+```ts
+const auth = createAtprotoAuth({
+  appName: "Inbox",
+  store: postgresStore((text, params) => sql.query(text, params)),
+  secret: env.AUTH_SECRET,
+  basePath: "/api/v1/atproto",
+  mode: "identity",
+  async onSignIn({ user, flow }) {
+    const account = await findOrCreateAccount(user.did, user.handle);
+    if (account.disabled) return redirectTo("/login?error=account_disabled");
+    return startAppSession(account, flow.returnTo ?? "/"); // a Response that sets your cookie
+  },
+  onSignInError: ({ code, flow }) => redirectTo(`/login?error=${code}`),
+});
+```
+
+`onSignIn` (in either mode) may return a `Response` to answer the callback
+itself; in the default `"session"` mode the library's session cookie is added to
+it. A throw fails the sign-in as `callback_failed`. `onSignInError` gets every
+failed callback (`access_denied`, `browser_mismatch`, `callback_failed`) with the
+flow when it could be read, and may return a `Response` too; otherwise the
+browser goes back with `?auth_error=<code>`.
+
+### Starting a sign-in from your own route
+
+`POST {basePath}/login` covers the common case. For your own API shape, or to
+carry something through the sign-in, call `authorize`:
+
+```ts
+app.post("/api/v1/sign-in", async (c) => {
+  const { handle } = await c.req.json();
+  const result = await auth.authorize(c.req.raw, {
+    handle,
+    returnTo: "/inbox",
+    context: { flow: "creator" }, // handed back as `flow.context`
+  });
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  const res = c.json({ url: result.url });
+  for (const cookie of result.cookies) res.headers.append("set-cookie", cookie);
+  return res;
+});
+```
+
+`context` is any JSON value. It is kept with the OAuth state in your store,
+sealed, and never travels through the browser or the authorization server, so it
+may hold a secret. Keep it small.
+
+**Callback paths.** List further paths in `callbackPaths` (`["/callback/mobile"]`)
+and pick one per sign-in with `callbackPath`. Each is published as a redirect URI
+and answered by `handle()`; a sign-in must come back to the path it was sent to.
+Use one where flows need telling apart before their state is read, such as a
+path a native app claims as a universal link.
+
+**Unbound flows.** Every sign-in is tied to the browser that started it by a
+nonce cookie, which is what stops login CSRF: someone finishing their own
+sign-in in your browser. A native app that hands off to the system browser
+can't keep that cookie. For that case only, `bindToBrowser: false` drops the
+cookie, and the app must bind the flow itself: put a verifier only it holds in
+`context`, and have `onSignIn` hand the result over only to whoever presents it.
+
+### Sign-up
+
+Someone without an account can create one without leaving your sign-in flow:
+the host's own sign-up page opens, and they come back signed in through the
+same callback as any sign-in. This uses OAuth's `prompt=create`, which an
+authorization server lists in its `prompt_values_supported` when it offers
+sign-up (`https://bsky.social` does).
+
+From the browser, `client.signUp()` or the element's `sign-up` attribute (see
+[Browser](#browser)) posts `{ signUp: true }` to `/login`. The server starts at
+the first of `signUpServers` (default `["https://bsky.social"]`); a request may
+name another only if it's on that list, so a browser can't make your Worker
+fetch an arbitrary URL. `signUpServers: []` turns sign-up off on that route.
+
+From your own route, pass a server instead of a handle:
+
+```ts
+const result = await auth.authorize(request, {
+  server: "https://bsky.social",
+  prompt: "create",
+  returnTo: "/welcome",
+});
+```
+
+Before anyone is sent away, the server's metadata is checked for `create`; a
+server without it answers `sign_up_unavailable`. `authorize` takes any https
+server, because the app chose it; don't pass one straight from a request.
+
+A sign-up asks for `scope` only: `conditionalScopes` are tested against an
+account's PDS, and there isn't one yet.
+
+`server` without `prompt: "create"` also works: the host shows its own choice
+between signing in and creating an account, which suits someone who knows their
+host but not their handle. Other prompts pass through for any sign-in:
+`"login"` to sign in again despite an existing session, `"select_account"` to
+pick between accounts.
 
 ### Scopes
 
@@ -74,7 +181,7 @@ signing that person in.
 ```ts
 import { pdsServesMethod } from "@bbthorson/atproto-cf-auth/server";
 
-createBlueskyAuth({
+createAtprotoAuth({
   // ...
   scope: "atproto repo:com.example.post",
   conditionalScopes: [
@@ -105,7 +212,7 @@ named in the metadata. Loopback development stays a public client.
 
 ```ts
 // once: node -e "import('@atproto/jwk-jose').then(async ({JoseKey}) => console.log(JSON.stringify((await JoseKey.generate(['ES256'], 'k1')).privateJwk)))"
-createBlueskyAuth({ /* ... */ privateKeys: [env.OAUTH_PRIVATE_KEY] });
+createAtprotoAuth({ /* ... */ privateKeys: [env.OAUTH_PRIVATE_KEY] });
 ```
 
 To rotate, put the new key first and keep the old one until its sessions have
@@ -154,11 +261,11 @@ tokens in time. `durableObjectLock` closes the race: each user's restores queue
 at one Durable Object, wherever they run.
 
 ```ts
-import { AuthLock, createBlueskyAuth, durableObjectLock } from "@bbthorson/atproto-cf-auth/server";
+import { AuthLock, createAtprotoAuth, durableObjectLock } from "@bbthorson/atproto-cf-auth/server";
 
 export { AuthLock }; // the Durable Object class, exported from your Worker's entry
 
-auth ??= createBlueskyAuth({
+auth ??= createAtprotoAuth({
   // ...
   requestLock: durableObjectLock(env.AUTH_LOCK),
 });
@@ -194,6 +301,7 @@ request at another location may read the old tokens for up to a minute.
 | Store | Use when |
 |---|---|
 | `d1Store(env.DB)` | You have D1. Strongly consistent; creates a `bsky_auth` table on first use. |
+| `postgresStore(query)` | You have Postgres: Neon (`(text, params) => sql.query(text, params)`), Hyperdrive or node-postgres (`pool.query`), PGlite. Strongly consistent. Creates a `bsky_auth` table on first use, or pass `createTable: false` and a `table` your migrations own. |
 | `kvStore(env.KV)` | You'd rather not add a database. Eventually consistent, so a sign-in that starts and finishes at different Cloudflare locations can fail. |
 | `memoryStore()` | Tests only. |
 
@@ -206,7 +314,9 @@ as a user. Changing the secret signs everyone out.
 - The session cookie is an opaque random id (`HttpOnly`, `SameSite=Lax`, `Secure`
   on https). The DID never sits in a cookie.
 - A short-lived nonce cookie ties each callback to the browser that started it,
-  which blocks login CSRF.
+  which blocks login CSRF. (Unless a flow opts out with `bindToBrowser: false`;
+  see [Unbound flows](#starting-a-sign-in-from-your-own-route).)
+- In `"identity"` mode no OAuth token outlives the callback.
 - `/login` and `/logout` refuse cross-site POSTs.
 - `returnTo` only accepts same-site paths, so it can't become an open redirect.
 - The client_id is derived from the request origin, so one deploy works on
@@ -226,6 +336,7 @@ import { createAuthClient, takeAuthError, HANDLE_INPUT_ATTRIBUTES } from "@bbtho
 const auth = createAuthClient();          // { basePath: "/auth" }
 const user = await auth.getUser();        // null when signed out
 await auth.signIn(handle, { returnTo: "/campaigns" }); // navigates to Bluesky; throws AuthError on failure
+await auth.signUp({ returnTo: "/welcome" }); // someone without an account; see Sign-up
 await auth.signOut();
 
 // After a failed redirect, read ?auth_error= once (it's removed from the URL):
@@ -305,17 +416,53 @@ remembered accounts, and `data-bsky-divider` to show only when there are any.
 The form still works with JavaScript off, because it posts to `/auth/login`.
 
 Attributes: `base-path`, `return-to`, `label`, `placeholder`, `button-label`,
-`loading-label`, `divider-label`, `typeahead`, `remember-accounts`,
-`ignore-redirect-errors`. Event: `bsky-sign-in:error` with `{ code, message }`.
+`loading-label`, `divider-label`, `typeahead`, `remember-accounts`, `sign-up`
+(with `sign-up-prompt` and `sign-up-label`), `ignore-redirect-errors`. Event: `bsky-sign-in:error` with `{ code, message }`.
 Call `preventDefault()` on it to show the error yourself. The input is an ARIA
 combobox when `typeahead` is on: arrow keys move through suggestions, Enter
 signs in as the highlighted one, Escape closes the list.
+
+`sign-up` adds "Don't have an account? Create one" under the form (class
+`bsky-sign-in__sign-up`, button `__sign-up-button`). Bare, it uses the server's
+default sign-up host; `sign-up="https://pds.example"` names one, which must be on
+the server's `signUpServers`. The button is a second submit button, so it works
+without JavaScript as well. In your own markup, give a submit button
+`data-bsky-sign-up name="signUp" value="1"`.
 
 `remember-accounts` only shows accounts; remembering one is the call to
 `accounts.remember(user)` above, on a page where you know the sign-in worked.
 
 In React, render `<bsky-sign-in>` like any element. Importing the module in a
 client component registers it, and the import is a no-op during SSR.
+
+## Upgrading
+
+### From 0.4 to 0.5
+
+Three breaking changes, each a mechanical edit, and two new error codes:
+
+- `createBlueskyAuth` is now `createAtprotoAuth`, and the types `BlueskyAuth`
+  and `BlueskyAuthOptions` are `AtprotoAuth` and `AtprotoAuthOptions`. Nothing in
+  the library is specific to Bluesky's servers.
+- `onSignIn` takes one object: `onSignIn: (user, request) => …` becomes
+  `onSignIn: ({ user, request }) => …`. It also gets `flow`, and may now return a
+  `Response`.
+- The default error copy for `invalid_handle` and `authorize_failed` no longer
+  says "Bluesky", and `<bsky-sign-in>`'s default label is
+  "Bluesky or Atmosphere handle". Apps that show `AUTH_ERROR_MESSAGES` or the
+  default label change wording; apps with their own copy see nothing.
+
+`AuthErrorCode` gains `invalid_server` and `sign_up_unavailable`. A `switch`
+over it that the compiler checks for exhaustiveness needs the two cases.
+
+New, and opt-in: `mode: "identity"`, `authorize()`, `callbackPaths`,
+`bindToBrowser: false`, `onSignInError`, sign-up (`server`, `prompt`,
+`signUpServers`, `client.signUp()`, the element's `sign-up`), and
+`postgresStore`.
+
+Unchanged on purpose, so nobody is signed out and no stylesheet breaks: the
+cookie names (`bsky_sid`, `bsky_auth_nonce`), the routes under `basePath`, the
+`<bsky-sign-in>` tag and its class names, and what's in the store.
 
 ## Develop
 

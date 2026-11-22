@@ -9,6 +9,7 @@ import {
   isAuthErrorCode,
   isValidHandle,
   normalizeHandle,
+  normalizeServer,
   type User,
 } from "./shared.js";
 
@@ -19,6 +20,7 @@ export {
   isAuthErrorCode,
   isValidHandle,
   normalizeHandle,
+  normalizeServer,
   type AuthErrorCode,
   type User,
 } from "./shared.js";
@@ -55,6 +57,15 @@ export interface SignInOptions {
   returnTo?: string;
 }
 
+export interface SignUpOptions extends SignInOptions {
+  /**
+   * The server to create the account on. It must be on the server's
+   * `signUpServers` list; default: the first one there (`https://bsky.social`
+   * unless the app changed it).
+   */
+  server?: string;
+}
+
 export interface AuthClient {
   /** The signed-in user, or `null`. Throws `AuthError("network_error")` if the server is unreachable. */
   getUser(): Promise<User | null>;
@@ -64,6 +75,13 @@ export interface AuthClient {
    * failure throws an `AuthError` whose `message` is ready to show.
    */
   signIn(handle: string, options?: SignInOptions): Promise<void>;
+  /**
+   * For someone without an account: asks the server to start a sign-up
+   * (`prompt=create`) and navigates to the host's account-creation page. They
+   * come back signed in, through the same callback as a sign-in. Throws an
+   * `AuthError` (`sign_up_unavailable`, `invalid_server`, …) on failure.
+   */
+  signUp(options?: SignUpOptions): Promise<void>;
   signOut(): Promise<void>;
 }
 
@@ -95,6 +113,29 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ handle, ...(signInOptions.returnTo ? { returnTo: signInOptions.returnTo } : {}) }),
+      });
+      const body = (await res.json().catch(() => null)) as { url?: string; error?: unknown } | null;
+      if (res.ok && body?.url) {
+        navigate(body.url);
+        return;
+      }
+      throw new AuthError(isAuthErrorCode(body?.error) ? body.error : res.status === 503 ? "not_configured" : "authorize_failed");
+    },
+
+    async signUp(signUpOptions = {}) {
+      let server: string | undefined;
+      if (signUpOptions.server !== undefined) {
+        server = normalizeServer(signUpOptions.server);
+        if (!server) throw new AuthError("invalid_server");
+      }
+      const res = await call("/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          signUp: true,
+          ...(server ? { server } : {}),
+          ...(signUpOptions.returnTo ? { returnTo: signUpOptions.returnTo } : {}),
+        }),
       });
       const body = (await res.json().catch(() => null)) as { url?: string; error?: unknown } | null;
       if (res.ok && body?.url) {
