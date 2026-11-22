@@ -1,0 +1,254 @@
+/*
+ * Optional starting styles for <bsky-sign-in>'s default markup.
+ *
+ *     import "@bbthorson/atproto-cf-auth/element.css";
+ *
+ * Everything inherits the page's font and text colour, and every choice is a
+ * custom property, so a site sets a handful of these on `bsky-sign-in` (or
+ * `:root`) to match itself:
+ *
+ *   --bsky-sign-in-accent        button and focus colour
+ *   --bsky-sign-in-accent-text   text on the button
+ *   --bsky-sign-in-surface       field, card and menu background
+ *   --bsky-sign-in-border        borders
+ *   --bsky-sign-in-muted         secondary text (handles, the "or")
+ *   --bsky-sign-in-hover         hovered / highlighted rows
+ *   --bsky-sign-in-error         error text
+ *   --bsky-sign-in-radius        field and button corners
+ *   --bsky-sign-in-card-radius   card and menu corners
+ *   --bsky-sign-in-avatar-size
+ *   --bsky-sign-in-gap
+ */
+bsky-sign-in {
+  --_accent: var(--bsky-sign-in-accent, #1185fe);
+  --_accent-text: var(--bsky-sign-in-accent-text, #fff);
+  --_surface: var(--bsky-sign-in-surface, Canvas);
+  --_border: var(--bsky-sign-in-border, color-mix(in srgb, currentColor 18%, transparent));
+  --_muted: var(--bsky-sign-in-muted, color-mix(in srgb, currentColor 62%, transparent));
+  --_hover: var(--bsky-sign-in-hover, color-mix(in srgb, currentColor 8%, transparent));
+  --_error: var(--bsky-sign-in-error, #d92d20);
+  --_radius: var(--bsky-sign-in-radius, 999px);
+  --_card-radius: var(--bsky-sign-in-card-radius, 16px);
+  --_avatar: var(--bsky-sign-in-avatar-size, 40px);
+  --_gap: var(--bsky-sign-in-gap, 12px);
+  display: block;
+  font: inherit;
+  color: inherit;
+}
+
+.bsky-sign-in__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--_gap);
+  margin: 0;
+}
+
+.bsky-sign-in__accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bsky-sign-in__account {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--_border);
+  border-radius: var(--_card-radius);
+  background: var(--_surface);
+  overflow: hidden;
+}
+
+.bsky-sign-in__account-choose {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.bsky-sign-in__account-choose:hover {
+  background: var(--_hover);
+}
+
+.bsky-sign-in__account-choose:focus-visible,
+.bsky-sign-in__account-forget:focus-visible {
+  outline: 2px solid var(--_accent);
+  outline-offset: -2px;
+}
+
+.bsky-sign-in__account-forget {
+  all: unset;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-right: 6px;
+  border-radius: 999px;
+  color: var(--_muted);
+  font-size: 1.4em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bsky-sign-in__account-forget:hover {
+  background: var(--_hover);
+  color: inherit;
+}
+
+.bsky-sign-in__avatar {
+  flex: none;
+  width: var(--_avatar);
+  height: var(--_avatar);
+  border-radius: 999px;
+  object-fit: cover;
+  background: var(--_hover);
+}
+
+.bsky-sign-in__avatar--empty {
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+  color: var(--_muted);
+}
+
+.bsky-sign-in__identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bsky-sign-in__name {
+  font-weight: 600;
+}
+
+.bsky-sign-in__name,
+.bsky-sign-in__handle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bsky-sign-in__handle {
+  color: var(--_muted);
+  font-size: 0.92em;
+}
+
+.bsky-sign-in__divider {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 4px 0;
+  color: var(--_muted);
+  font-size: 0.92em;
+}
+
+.bsky-sign-in__divider::before,
+.bsky-sign-in__divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--_border);
+}
+
+.bsky-sign-in__label {
+  color: var(--_muted);
+}
+
+.bsky-sign-in__field {
+  position: relative;
+}
+
+.bsky-sign-in__input {
+  box-sizing: border-box;
+  width: 100%;
+  /* 16px keeps iOS Safari from zooming in on focus. */
+  font: inherit;
+  font-size: max(16px, 1em);
+  color: inherit;
+  padding: 14px 20px;
+  border: 1px solid var(--_border);
+  border-radius: var(--_radius);
+  background: var(--_surface);
+}
+
+.bsky-sign-in__input:focus {
+  outline: none;
+  border-color: var(--_accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--_accent) 30%, transparent);
+}
+
+.bsky-sign-in__input[aria-invalid="true"] {
+  border-color: var(--_error);
+}
+
+.bsky-sign-in__suggestions {
+  position: absolute;
+  inset-inline: 0;
+  top: calc(100% + 6px);
+  z-index: 10;
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  border: 1px solid var(--_border);
+  border-radius: var(--_card-radius);
+  background: var(--_surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+}
+
+.bsky-sign-in__suggestion {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.bsky-sign-in__suggestion:hover,
+.bsky-sign-in__suggestion[aria-selected="true"] {
+  background: var(--_hover);
+}
+
+.bsky-sign-in__button {
+  font: inherit;
+  font-weight: 600;
+  padding: 14px 20px;
+  border: 0;
+  border-radius: var(--_radius);
+  background: var(--_accent);
+  color: var(--_accent-text);
+  cursor: pointer;
+}
+
+.bsky-sign-in__button:focus-visible {
+  outline: 2px solid var(--_accent);
+  outline-offset: 2px;
+}
+
+.bsky-sign-in__button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.bsky-sign-in__error {
+  margin: 0;
+  color: var(--_error);
+}
+
+.bsky-sign-in__error[hidden],
+.bsky-sign-in__accounts[hidden],
+.bsky-sign-in__divider[hidden],
+.bsky-sign-in__suggestions[hidden] {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bsky-sign-in__suggestions {
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+  }
+}

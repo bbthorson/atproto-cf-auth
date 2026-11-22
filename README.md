@@ -238,27 +238,81 @@ the handle before calling the server. Errors are `AuthError`s whose `message` is
 ready to show and whose `code` you can map to your own copy (`AUTH_ERROR_MESSAGES`
 holds the defaults). Spread `HANDLE_INPUT_ATTRIBUTES` onto your own `<input>` so
 phones don't capitalise the handle and password managers offer it.
-`searchHandles(query)` is an optional typeahead against Bluesky's public API.
+`searchHandles(query)` is the typeahead search on its own, against Bluesky's public API.
+
+### Remembered accounts and typeahead
+
+The pieces behind a "Continue as @alice" sign-in screen, for any framework:
+
+```ts
+import { createRecentAccounts, createSignInController } from "@bbthorson/atproto-cf-auth/client";
+
+const accounts = createRecentAccounts();            // localStorage; pass `storage` for React Native
+
+// Once a sign-in has worked (the page the callback lands on):
+const user = await auth.getUser();
+if (user) await accounts.remember(user);            // fills name and avatar from Bluesky's public API
+
+// On the sign-in screen:
+const controller = createSignInController({
+  signIn: (handle) => auth.signIn(handle),           // or your own redirect; navigate away or throw
+  accounts,
+  typeahead: true,                                    // off by default: it sends keystrokes to Bluesky
+});
+controller.subscribe(() => render(controller.getState()));
+// state: { query, suggestions, activeIndex, accounts, status, error, pending }
+// actions: setQuery, moveActive, closeSuggestions, submit, choose(account), forget(did), setError
+```
+
+The controller owns everything that isn't markup: debounced, cancelled
+searches that ignore late answers; handle normalisation and checking before
+anything is sent; one sign-in at a time; and leaving the "loading" state when
+the page comes back from the back/forward cache. In React, read it with
+`useSyncExternalStore(controller.subscribe, controller.getState)` and draw it
+with your own components.
+
+Remembered accounts stay on the device and hold no tokens: DID, handle,
+display name and an https avatar URL. Signing out doesn't forget them; the ✕
+on a card does (`forget`). `lookupProfile(actor)` is the profile lookup on its
+own.
 
 ### `<bsky-sign-in>`
 
 ```html
 <script type="module">import "@bbthorson/atproto-cf-auth/element";</script>
 
-<bsky-sign-in return-to="/campaigns" button-label="Continue with Bluesky"></bsky-sign-in>
+<bsky-sign-in return-to="/campaigns" button-label="Continue" typeahead remember-accounts></bsky-sign-in>
 ```
 
-It renders into the light DOM with plain classes (`bsky-sign-in__form`,
-`__label`, `__input`, `__button`, `__error`) and sets `data-state="idle|loading|error"`,
-so your own CSS or Tailwind styles it. To use your own markup, put a `<form>`
-containing `<input name="handle">`, a button and an element with
-`data-bsky-error` inside the element; it adds behaviour and leaves your markup
-alone. The form still works with JavaScript off, because it posts to
-`/auth/login`.
+It renders into the light DOM with plain classes and sets
+`data-state="idle|loading|error"`, so your own CSS or Tailwind styles it:
+`bsky-sign-in__form`, `__accounts`, `__account`, `__account-choose`,
+`__account-forget`, `__divider`, `__label`, `__field`, `__input`,
+`__suggestions`, `__suggestion`, `__avatar` (`__avatar--empty` without a
+picture), `__identity`, `__name`, `__handle`, `__button`, `__error`.
+
+For a starting point, import `@bbthorson/atproto-cf-auth/element.css`. It
+inherits the page's font and text colour, and takes its other choices from
+custom properties (`--bsky-sign-in-accent`, `-surface`, `-border`, `-muted`,
+`-hover`, `-error`, `-radius`, `-card-radius`, `-avatar-size`, `-gap`), so a
+few lines make it match the site.
+
+To use your own markup, put a `<form>` containing `<input name="handle">`, a
+button and an element with `data-bsky-error` inside the element; it adds
+behaviour and leaves your markup alone. Add an element with
+`data-bsky-suggestions` for the typeahead list, `data-bsky-accounts` for the
+remembered accounts, and `data-bsky-divider` to show only when there are any.
+The form still works with JavaScript off, because it posts to `/auth/login`.
 
 Attributes: `base-path`, `return-to`, `label`, `placeholder`, `button-label`,
-`loading-label`, `ignore-redirect-errors`. Event: `bsky-sign-in:error` with
-`{ code, message }`. Call `preventDefault()` on it to show the error yourself.
+`loading-label`, `divider-label`, `typeahead`, `remember-accounts`,
+`ignore-redirect-errors`. Event: `bsky-sign-in:error` with `{ code, message }`.
+Call `preventDefault()` on it to show the error yourself. The input is an ARIA
+combobox when `typeahead` is on: arrow keys move through suggestions, Enter
+signs in as the highlighted one, Escape closes the list.
+
+`remember-accounts` only shows accounts; remembering one is the call to
+`accounts.remember(user)` above, on a page where you know the sign-in worked.
 
 In React, render `<bsky-sign-in>` like any element. Importing the module in a
 client component registers it, and the import is a no-op during SSR.
