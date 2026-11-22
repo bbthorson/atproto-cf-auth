@@ -214,11 +214,22 @@ describe("onSignInError", () => {
   });
 });
 
+describe("appName", () => {
+  it("may depend on the origin the client is named for", () => {
+    const auth = makeAuth({ appName: (origin) => (origin === "https://admin.app.example" ? "Test Admin" : "Test App") });
+    expect(auth.clientMetadata("https://admin.app.example").client_name).toBe("Test Admin");
+    expect(auth.clientMetadata(ORIGIN).client_name).toBe("Test App");
+    expect(auth.clientMetadata("http://127.0.0.1:3000").client_name).toBe("Test App");
+  });
+});
+
 describe("authorize", () => {
   it("reports what the login route would, without a response", async () => {
     const auth = makeAuth();
     expect(await auth.authorize(get("/"), { handle: "not a handle" })).toEqual({ ok: false, error: "invalid_handle", status: 400 });
-    vi.spyOn(OAuthClient.prototype, "authorize").mockRejectedValue(new Error("Failed to resolve identity: x"));
-    expect(await auth.authorize(get("/"), { handle: "x.example" })).toEqual({ ok: false, error: "handle_not_found", status: 400 });
+    const cause = new Error("Failed to resolve identity: x");
+    vi.spyOn(OAuthClient.prototype, "authorize").mockRejectedValue(cause);
+    // The cause comes back for the app's logs.
+    expect(await auth.authorize(get("/"), { handle: "x.example" })).toEqual({ ok: false, error: "handle_not_found", status: 400, cause });
   });
 });

@@ -38,7 +38,8 @@ With Hono: `app.all("/auth/*", async (c) => (await auth.handle(c.req.raw)) ?? c.
 With Astro: call `auth.handle(context.request)` from middleware or from an
 `src/pages/auth/[...route].ts` endpoint.
 
-**Options:** `basePath` (default `/auth`), `redirectTo` (default `/`), `scope`
+**Options:** `appName` (a string, or a function of the origin for one deploy
+serving several names), `basePath` (default `/auth`), `redirectTo` (default `/`), `scope`
 (default `atproto`, which proves identity only; see [Scopes](#scopes)),
 `conditionalScopes`, `privateKeys` (see [Confidential client](#confidential-client)),
 `origin` (see [Outside a request](#outside-a-request)), `sessionTtlSeconds`
@@ -436,6 +437,11 @@ In React, render `<bsky-sign-in>` like any element. Importing the module in a
 client component registers it, and the import is a no-op during SSR.
 
 ## Upgrading
+
+### 0.5.1
+
+Additive: `appName` may be a function of the origin, and a failed
+`authorize()` carries the thrown error as `cause`, for your logs.
 
 ### From 0.4 to 0.5
 
