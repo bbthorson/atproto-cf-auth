@@ -1,6 +1,6 @@
 {
   "name": "@bbthorson/atproto-cf-auth",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Bluesky (AT-Proto OAuth) sign-in for apps on Cloudflare Workers: server handlers, D1/KV session stores, and framework-free browser primitives.",
   "license": "MIT",
   "type": "module",
@@ -9,7 +9,8 @@
     "url": "git+https://github.com/bbthorson/atproto-cf-auth.git"
   },
   "sideEffects": [
-    "./dist/element.js"
+    "./dist/element.js",
+    "*.css"
   ],
   "exports": {
     "./server": {
@@ -23,7 +24,8 @@
     "./element": {
       "types": "./dist/element.d.ts",
       "default": "./dist/element.js"
-    }
+    },
+    "./element.css": "./dist/element.css"
   },
   "files": [
     "dist",
@@ -31,7 +33,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/element.css dist/element.css",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
@@ -57,7 +59,8 @@
     "oauth",
     "cloudflare-workers",
     "d1",
-    "web-component"
+    "web-component",
+    "typeahead"
   ],
   "publishConfig": {
     "access": "public"
