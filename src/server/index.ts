@@ -1,9 +1,11 @@
 export {
-  createBlueskyAuth,
+  createAtprotoAuth,
   type AuthorizeInput,
   type AuthorizeResult,
-  type BlueskyAuth,
-  type BlueskyAuthOptions,
+  type AtprotoAuth,
+  type AtprotoAuthOptions,
+  type SignInErrorEvent,
+  type SignInEvent,
   type SignInFlow,
 } from "./auth.js";
 export {

@@ -1,13 +1,13 @@
 import { OAuthClient } from "@atproto/oauth-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBlueskyAuth } from "./auth.js";
+import { createAtprotoAuth } from "./auth.js";
 import { memoryStore } from "./stores/memory.js";
 
 const ORIGIN = "https://app.example";
 const SECRET = "s".repeat(40);
 
-function makeAuth(overrides: Partial<Parameters<typeof createBlueskyAuth>[0]> = {}) {
-  return createBlueskyAuth({ appName: "Test App", store: memoryStore(), secret: SECRET, ...overrides });
+function makeAuth(overrides: Partial<Parameters<typeof createAtprotoAuth>[0]> = {}) {
+  return createAtprotoAuth({ appName: "Test App", store: memoryStore(), secret: SECRET, ...overrides });
 }
 
 function get(path: string, cookie?: string): Request {
@@ -63,11 +63,11 @@ describe("identity mode", () => {
 
     const res = (await auth.handle(get("/auth/callback?code=c&state=s&iss=x", nonceCookie(started.cookies))))!;
     expect(res.headers.get("location")).toBe("/dashboard");
-    expect(onSignIn).toHaveBeenCalledWith(
-      expect.objectContaining({ did: "did:plc:alice", handle: "alice.bsky.social" }),
-      expect.any(Request),
-      { context: { mode: "login" }, returnTo: "/inbox", callbackPath: "/callback" },
-    );
+    expect(onSignIn).toHaveBeenCalledWith({
+      user: expect.objectContaining({ did: "did:plc:alice", handle: "alice.bsky.social" }),
+      request: expect.any(Request),
+      flow: { context: { mode: "login" }, returnTo: "/inbox", callbackPath: "/callback" },
+    });
     // The tokens are revoked once the DID is proved.
     expect(signOut).toHaveBeenCalled();
     const cookies = setCookies(res);
@@ -117,7 +117,7 @@ describe("callback paths", () => {
     const res = (await auth.handle(get("/api/v1/atproto/callback/mobile?code=c", nonceCookie(started.cookies))))!;
     expect(res.status).toBe(303);
     expect(callback).toHaveBeenCalledWith(expect.any(URLSearchParams), { redirect_uri: mobileUri });
-    expect(onSignIn).toHaveBeenCalledWith(expect.anything(), expect.anything(), { callbackPath: "/callback/mobile" });
+    expect(onSignIn).toHaveBeenCalledWith(expect.objectContaining({ flow: { callbackPath: "/callback/mobile" } }));
   });
 
   it("refuses a sign-in that comes back to a different callback than it was sent to", async () => {
@@ -153,10 +153,9 @@ describe("unbound flows", () => {
     expect(started).toMatchObject({ ok: true, cookies: [] });
     const res = (await auth.handle(get("/auth/callback?code=c")))!;
     expect(res.status).toBe(303);
-    expect(onSignIn).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      context: { verifier: "v-123" },
-      callbackPath: "/callback",
-    });
+    expect(onSignIn).toHaveBeenCalledWith(
+      expect.objectContaining({ flow: { context: { verifier: "v-123" }, callbackPath: "/callback" } }),
+    );
   });
 
   it("don't loosen a bound flow: no cookie is still a mismatch", async () => {
@@ -177,11 +176,9 @@ describe("onSignInError", () => {
     callback.mockRejectedValueOnce(new Error("token exchange failed"));
     const res = (await auth.handle(get("/auth/callback?code=c")))!;
     expect(res.headers.get("location")).toBe("app://error");
-    expect(onSignInError).toHaveBeenCalledWith(
-      expect.objectContaining({ code: "callback_failed" }),
-      expect.any(Request),
-      undefined, // a plain Error carries no state
-    );
+    const [event] = onSignInError.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(event).toMatchObject({ code: "callback_failed", request: expect.any(Request) });
+    expect(event).not.toHaveProperty("flow"); // a plain Error carries no state
   });
 
   it("gets the flow on a browser mismatch, and a throwing onSignIn becomes callback_failed", async () => {
@@ -198,11 +195,11 @@ describe("onSignInError", () => {
 
     const mismatch = (await auth.handle(get("/auth/callback?code=c")))!;
     expect(mismatch.headers.get("location")).toBe("/x?auth_error=browser_mismatch");
-    expect(onSignInError).toHaveBeenLastCalledWith(
-      { code: "browser_mismatch" },
-      expect.any(Request),
-      { context: { mode: "login" }, returnTo: "/x", callbackPath: "/callback" },
-    );
+    expect(onSignInError).toHaveBeenLastCalledWith({
+      code: "browser_mismatch",
+      request: expect.any(Request),
+      flow: { context: { mode: "login" }, returnTo: "/x", callbackPath: "/callback" },
+    });
 
     await auth.authorize(get("/"), { handle: "alice.bsky.social" });
     const again = await auth.authorize(get("/"), { handle: "alice.bsky.social" });
@@ -210,9 +207,7 @@ describe("onSignInError", () => {
     const thrown = (await auth.handle(get("/auth/callback?code=c", nonceCookie(again.cookies))))!;
     expect(thrown.headers.get("location")).toBe("/?auth_error=callback_failed");
     expect(onSignInError).toHaveBeenLastCalledWith(
-      expect.objectContaining({ code: "callback_failed", cause: expect.any(Error) }),
-      expect.any(Request),
-      expect.anything(),
+      expect.objectContaining({ code: "callback_failed", cause: expect.any(Error), flow: expect.anything() }),
     );
     // A failed onSignIn in session mode leaves no session behind on the response.
     expect(setCookies(thrown)["bsky_sid"]).toBeUndefined();

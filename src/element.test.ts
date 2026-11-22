@@ -38,7 +38,7 @@ describe("<bsky-sign-in>", () => {
     await vi.waitFor(() => expect(el.dataset["state"]).toBe("error"));
     const error = el.querySelector("[data-bsky-error]") as HTMLElement;
     expect(error.hidden).toBe(false);
-    expect(error.textContent).toMatch(/doesn't look like a Bluesky handle/);
+    expect(error.textContent).toMatch(/doesn't look like a handle/);
     expect(el.querySelector("input")!.getAttribute("aria-describedby")).toBe(error.id);
     expect(fetch).not.toHaveBeenCalled();
   });

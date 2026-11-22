@@ -17,7 +17,7 @@ import type { RuntimeLock } from "@atproto/oauth-client";
  * ```ts
  * // worker entry
  * export { AuthLock } from "@bbthorson/atproto-cf-auth/server";
- * createBlueskyAuth({ ..., requestLock: durableObjectLock(env.AUTH_LOCK) });
+ * createAtprotoAuth({ ..., requestLock: durableObjectLock(env.AUTH_LOCK) });
  * ```
  *
  * ```toml

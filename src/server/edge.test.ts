@@ -1,6 +1,6 @@
 import { AtprotoDohHandleResolver } from "@atproto/oauth-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBlueskyAuth } from "./auth.js";
+import { createAtprotoAuth } from "./auth.js";
 import { edgeFetch } from "./edge.js";
 import { memoryStore } from "./stores/memory.js";
 
@@ -74,7 +74,7 @@ const authServer: Record<string, () => Response> = {
 };
 
 function login(): Promise<Response> {
-  const auth = createBlueskyAuth({ appName: "Test App", store: memoryStore(), secret: "s".repeat(40) });
+  const auth = createAtprotoAuth({ appName: "Test App", store: memoryStore(), secret: "s".repeat(40) });
   return auth.handle(
     new Request(`${ORIGIN}/auth/login`, {
       method: "POST",

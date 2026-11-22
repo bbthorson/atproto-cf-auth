@@ -169,7 +169,7 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
     attributeChangedCallback(): void {
       if (!this.form) return;
       const label = this.querySelector(`.${C}__label`);
-      if (label) label.textContent = this.getAttribute("label") ?? "Bluesky handle";
+      if (label) label.textContent = this.getAttribute("label") ?? "Bluesky or Atmosphere handle";
       if (this.input && this.hasAttribute("placeholder")) this.input.placeholder = this.getAttribute("placeholder")!;
       if (this.button?.classList.contains(`${C}__button`)) {
         this.buttonText = this.getAttribute("button-label") ?? "Sign in with Bluesky";
@@ -191,7 +191,7 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
       divider.setAttribute("data-bsky-divider", "");
       divider.append(el("span", "", this.getAttribute("divider-label") ?? "or"));
 
-      const label = el("label", `${C}__label`, this.getAttribute("label") ?? "Bluesky handle");
+      const label = el("label", `${C}__label`, this.getAttribute("label") ?? "Bluesky or Atmosphere handle");
       label.htmlFor = id;
 
       const field = el("div", `${C}__field`);

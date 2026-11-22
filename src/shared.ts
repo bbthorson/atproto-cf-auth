@@ -26,9 +26,9 @@ export type AuthErrorCode =
 
 /** Default English copy. Apps with their own voice can map codes themselves. */
 export const AUTH_ERROR_MESSAGES: Readonly<Record<AuthErrorCode, string>> = {
-  invalid_handle: "That doesn't look like a Bluesky handle. Try something like you.bsky.social.",
+  invalid_handle: "That doesn't look like a handle. Try something like you.bsky.social.",
   handle_not_found: "We couldn't find that handle. Double-check it and try again.",
-  authorize_failed: "Your Bluesky server didn't respond. Try again in a moment.",
+  authorize_failed: "Your account's server didn't respond. Try again in a moment.",
   access_denied: "Sign-in was cancelled.",
   callback_failed: "Sign-in didn't finish. Please try again.",
   browser_mismatch: "Sign-in was started in a different browser or tab. Please start again here.",

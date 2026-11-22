@@ -11,13 +11,13 @@ Worker.
 ## Server
 
 ```ts
-import { createBlueskyAuth, d1Store } from "@bbthorson/atproto-cf-auth/server";
+import { createAtprotoAuth, d1Store } from "@bbthorson/atproto-cf-auth/server";
 
-let auth: ReturnType<typeof createBlueskyAuth> | undefined;
+let auth: ReturnType<typeof createAtprotoAuth> | undefined;
 
 export default {
   async fetch(request: Request, env: Env) {
-    auth ??= createBlueskyAuth({
+    auth ??= createAtprotoAuth({
       appName: "Bardcast",
       store: d1Store(env.DB),       // or kvStore(env.KV)
       secret: env.SESSION_SECRET,   // Worker secret, 32+ random characters
@@ -69,18 +69,18 @@ cookie, serves no `/session` or `/logout`, and revokes the OAuth tokens as soon
 as the sign-in is verified.
 
 ```ts
-const auth = createBlueskyAuth({
+const auth = createAtprotoAuth({
   appName: "Inbox",
   store: postgresStore((text, params) => sql.query(text, params)),
   secret: env.AUTH_SECRET,
   basePath: "/api/v1/atproto",
   mode: "identity",
-  async onSignIn(user, request, flow) {
+  async onSignIn({ user, flow }) {
     const account = await findOrCreateAccount(user.did, user.handle);
     if (account.disabled) return redirectTo("/login?error=account_disabled");
     return startAppSession(account, flow.returnTo ?? "/"); // a Response that sets your cookie
   },
-  onSignInError: ({ code }) => redirectTo(`/login?error=${code}`),
+  onSignInError: ({ code, flow }) => redirectTo(`/login?error=${code}`),
 });
 ```
 
@@ -143,7 +143,7 @@ signing that person in.
 ```ts
 import { pdsServesMethod } from "@bbthorson/atproto-cf-auth/server";
 
-createBlueskyAuth({
+createAtprotoAuth({
   // ...
   scope: "atproto repo:com.example.post",
   conditionalScopes: [
@@ -174,7 +174,7 @@ named in the metadata. Loopback development stays a public client.
 
 ```ts
 // once: node -e "import('@atproto/jwk-jose').then(async ({JoseKey}) => console.log(JSON.stringify((await JoseKey.generate(['ES256'], 'k1')).privateJwk)))"
-createBlueskyAuth({ /* ... */ privateKeys: [env.OAUTH_PRIVATE_KEY] });
+createAtprotoAuth({ /* ... */ privateKeys: [env.OAUTH_PRIVATE_KEY] });
 ```
 
 To rotate, put the new key first and keep the old one until its sessions have
@@ -223,11 +223,11 @@ tokens in time. `durableObjectLock` closes the race: each user's restores queue
 at one Durable Object, wherever they run.
 
 ```ts
-import { AuthLock, createBlueskyAuth, durableObjectLock } from "@bbthorson/atproto-cf-auth/server";
+import { AuthLock, createAtprotoAuth, durableObjectLock } from "@bbthorson/atproto-cf-auth/server";
 
 export { AuthLock }; // the Durable Object class, exported from your Worker's entry
 
-auth ??= createBlueskyAuth({
+auth ??= createAtprotoAuth({
   // ...
   requestLock: durableObjectLock(env.AUTH_LOCK),
 });
@@ -388,6 +388,27 @@ signs in as the highlighted one, Escape closes the list.
 
 In React, render `<bsky-sign-in>` like any element. Importing the module in a
 client component registers it, and the import is a no-op during SSR.
+
+## Upgrading
+
+### From 0.4 to 0.5
+
+Three breaking changes, each a mechanical edit:
+
+- `createBlueskyAuth` is now `createAtprotoAuth`, and the types `BlueskyAuth`
+  and `BlueskyAuthOptions` are `AtprotoAuth` and `AtprotoAuthOptions`. Nothing in
+  the library is specific to Bluesky's servers.
+- `onSignIn` takes one object: `onSignIn: (user, request) => …` becomes
+  `onSignIn: ({ user, request }) => …`. It also gets `flow`, and may now return a
+  `Response`.
+- The default error copy for `invalid_handle` and `authorize_failed` no longer
+  says "Bluesky", and `<bsky-sign-in>`'s default label is
+  "Bluesky or Atmosphere handle". Apps that show `AUTH_ERROR_MESSAGES` or the
+  default label change wording; apps with their own copy see nothing.
+
+Unchanged on purpose, so nobody is signed out and no stylesheet breaks: the
+cookie names (`bsky_sid`, `bsky_auth_nonce`), the routes under `basePath`, the
+`<bsky-sign-in>` tag and its class names, and what's in the store.
 
 ## Develop
 

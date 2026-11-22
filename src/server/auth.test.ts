@@ -1,13 +1,13 @@
 import { OAuthClient } from "@atproto/oauth-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBlueskyAuth } from "./auth.js";
+import { createAtprotoAuth } from "./auth.js";
 import { memoryStore } from "./stores/memory.js";
 
 const ORIGIN = "https://app.example";
 const SECRET = "s".repeat(40);
 
-function makeAuth(overrides: Partial<Parameters<typeof createBlueskyAuth>[0]> = {}) {
-  return createBlueskyAuth({ appName: "Test App", store: memoryStore(), secret: SECRET, ...overrides });
+function makeAuth(overrides: Partial<Parameters<typeof createAtprotoAuth>[0]> = {}) {
+  return createAtprotoAuth({ appName: "Test App", store: memoryStore(), secret: SECRET, ...overrides });
 }
 
 function post(path: string, body: unknown, headers: Record<string, string> = {}): Request {
@@ -49,7 +49,7 @@ function fakePds(did = "did:plc:alice") {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("createBlueskyAuth", () => {
+describe("createAtprotoAuth", () => {
   it("ignores paths outside basePath", async () => {
     expect(await makeAuth().handle(new Request(`${ORIGIN}/api/things`))).toBeNull();
   });
@@ -77,7 +77,7 @@ describe("createBlueskyAuth", () => {
   it("signs in, reports the session, and signs out", async () => {
     fakePds();
     const seen: string[] = [];
-    const auth = makeAuth({ onSignIn: (user) => void seen.push(user.did) });
+    const auth = makeAuth({ onSignIn: ({ user }) => void seen.push(user.did) });
 
     const login = (await auth.handle(post("/auth/login", { handle: "@Alice", returnTo: "/campaigns" })))!;
     expect(login.status).toBe(200);

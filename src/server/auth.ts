@@ -28,7 +28,7 @@ import { CLIENT_ASSERTION_TYPE, clientAssertion, ObtainSessionError, requestHand
 import { joinScopes, negotiateScope, type ConditionalScope } from "./scopes.js";
 import type { AuthStore } from "./stores/types.js";
 
-export interface BlueskyAuthOptions {
+export interface AtprotoAuthOptions {
   /** Shown on the Bluesky consent screen. */
   appName: string;
   /** Where sessions and in-flight sign-ins live: `d1Store`, `kvStore` or `memoryStore`. */
@@ -116,18 +116,33 @@ export interface BlueskyAuthOptions {
    * cookie); return nothing for the default redirect. A throw fails the
    * sign-in as `callback_failed`.
    */
-  onSignIn?: (user: User, request: Request, flow: SignInFlow) => void | Response | Promise<void | Response>;
+  onSignIn?: (event: SignInEvent) => void | Response | Promise<void | Response>;
   /**
    * Called when a callback fails, with the flow when it could be read. Return a
    * `Response` to report the failure your own way (your error page, a native
    * app's deep link); return nothing for the default redirect with
    * `?auth_error=<code>`.
    */
-  onSignInError?: (
-    error: { code: AuthErrorCode; cause?: unknown },
-    request: Request,
-    flow: SignInFlow | undefined,
-  ) => void | Response | Promise<void | Response>;
+  onSignInError?: (event: SignInErrorEvent) => void | Response | Promise<void | Response>;
+}
+
+/** What `onSignIn` is told. */
+export interface SignInEvent {
+  /** Who signed in: the DID the authorization server vouched for, and its handle when it resolves. */
+  user: User;
+  /** The callback request. */
+  request: Request;
+  flow: SignInFlow;
+}
+
+/** What `onSignInError` is told. */
+export interface SignInErrorEvent {
+  code: AuthErrorCode;
+  /** What was thrown, when something was. */
+  cause?: unknown;
+  request: Request;
+  /** The flow, when its state could be read. A failure before that (a bad or replayed code) has none. */
+  flow?: SignInFlow;
 }
 
 /** What an app attached to a sign-in when it started, handed back when it ends. */
@@ -174,7 +189,7 @@ export type AuthorizeResult =
     }
   | { ok: false; error: AuthErrorCode; status: number };
 
-export interface BlueskyAuth {
+export interface AtprotoAuth {
   /**
    * Start a sign-in from your own route: what `POST {basePath}/login` does,
    * plus `context`, a callback path and an unbound flow. Answer with
@@ -263,7 +278,7 @@ function randomId(): string {
  * domain, 127.0.0.1 in development): the OAuth client_id and redirect_uri are
  * derived from the request's origin, so each origin names itself correctly.
  */
-export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
+export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
   const basePath = (options.basePath ?? "/auth").replace(/\/+$/, "");
   const redirectTo = safeReturnTo(options.redirectTo ?? "/") ?? "/";
   const scope = options.scope ?? "atproto";
@@ -602,7 +617,12 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
       const flow = state ? flowOf(state) : undefined;
       let response: Response | void;
       try {
-        response = await options.onSignInError?.({ code, ...(cause !== undefined ? { cause } : {}) }, request, flow);
+        response = await options.onSignInError?.({
+          code,
+          request,
+          ...(cause !== undefined ? { cause } : {}),
+          ...(flow ? { flow } : {}),
+        });
       } catch {
         response = undefined;
       }
@@ -653,7 +673,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
     const user: User = { did, signedInAt, ...(handle ? { handle } : {}) };
     let response: Response | void;
     try {
-      response = await options.onSignIn?.(user, request, flowOf(state));
+      response = await options.onSignIn?.({ user, request, flow: flowOf(state) });
     } catch (err) {
       return fail("callback_failed", state, err);
     }
@@ -719,7 +739,7 @@ export function createBlueskyAuth(options: BlueskyAuthOptions): BlueskyAuth {
 }
 
 /** Import the configured private keys as a keyset. Every key needs a `kid`; only ES256 is supported. */
-async function loadKeyset(privateKeys: BlueskyAuthOptions["privateKeys"]): Promise<Keyset | undefined> {
+async function loadKeyset(privateKeys: AtprotoAuthOptions["privateKeys"]): Promise<Keyset | undefined> {
   if (!privateKeys?.length) return undefined;
   const keys = await Promise.all(
     privateKeys.map(async (raw, i) => {
