@@ -44,7 +44,8 @@ With Astro: call `auth.handle(context.request)` from middleware or from an
 `origin` (see [Outside a request](#outside-a-request)), `sessionTtlSeconds`
 (default 30 days), `cookieName`, `metadata` (logo, terms and privacy URLs for the
 consent screen), `mode`, `callbackPaths`, `onSignIn` and `onSignInError` (see
-[Identity only](#identity-only)), `handleResolver` and `requestLock` (see [Lock](#lock)).
+[Identity only](#identity-only)), `signUpServers` (see [Sign-up](#sign-up)),
+`handleResolver` and `requestLock` (see [Lock](#lock)).
 
 **Identity lookups on Workers.** Workers refuse `redirect: "error"`, in `fetch()`
 and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
@@ -127,6 +128,43 @@ sign-in in your browser. A native app that hands off to the system browser
 can't keep that cookie. For that case only, `bindToBrowser: false` drops the
 cookie, and the app must bind the flow itself: put a verifier only it holds in
 `context`, and have `onSignIn` hand the result over only to whoever presents it.
+
+### Sign-up
+
+Someone without an account can create one without leaving your sign-in flow:
+the host's own sign-up page opens, and they come back signed in through the
+same callback as any sign-in. This uses OAuth's `prompt=create`, which an
+authorization server lists in its `prompt_values_supported` when it offers
+sign-up (`https://bsky.social` does).
+
+From the browser, `client.signUp()` or the element's `sign-up` attribute (see
+[Browser](#browser)) posts `{ signUp: true }` to `/login`. The server starts at
+the first of `signUpServers` (default `["https://bsky.social"]`); a request may
+name another only if it's on that list, so a browser can't make your Worker
+fetch an arbitrary URL. `signUpServers: []` turns sign-up off on that route.
+
+From your own route, pass a server instead of a handle:
+
+```ts
+const result = await auth.authorize(request, {
+  server: "https://bsky.social",
+  prompt: "create",
+  returnTo: "/welcome",
+});
+```
+
+Before anyone is sent away, the server's metadata is checked for `create`; a
+server without it answers `sign_up_unavailable`. `authorize` takes any https
+server, because the app chose it; don't pass one straight from a request.
+
+A sign-up asks for `scope` only: `conditionalScopes` are tested against an
+account's PDS, and there isn't one yet.
+
+`server` without `prompt: "create"` also works: the host shows its own choice
+between signing in and creating an account, which suits someone who knows their
+host but not their handle. Other prompts pass through for any sign-in:
+`"login"` to sign in again despite an existing session, `"select_account"` to
+pick between accounts.
 
 ### Scopes
 
@@ -298,6 +336,7 @@ import { createAuthClient, takeAuthError, HANDLE_INPUT_ATTRIBUTES } from "@bbtho
 const auth = createAuthClient();          // { basePath: "/auth" }
 const user = await auth.getUser();        // null when signed out
 await auth.signIn(handle, { returnTo: "/campaigns" }); // navigates to Bluesky; throws AuthError on failure
+await auth.signUp({ returnTo: "/welcome" }); // someone without an account; see Sign-up
 await auth.signOut();
 
 // After a failed redirect, read ?auth_error= once (it's removed from the URL):
@@ -377,11 +416,18 @@ remembered accounts, and `data-bsky-divider` to show only when there are any.
 The form still works with JavaScript off, because it posts to `/auth/login`.
 
 Attributes: `base-path`, `return-to`, `label`, `placeholder`, `button-label`,
-`loading-label`, `divider-label`, `typeahead`, `remember-accounts`,
-`ignore-redirect-errors`. Event: `bsky-sign-in:error` with `{ code, message }`.
+`loading-label`, `divider-label`, `typeahead`, `remember-accounts`, `sign-up`
+(with `sign-up-prompt` and `sign-up-label`), `ignore-redirect-errors`. Event: `bsky-sign-in:error` with `{ code, message }`.
 Call `preventDefault()` on it to show the error yourself. The input is an ARIA
 combobox when `typeahead` is on: arrow keys move through suggestions, Enter
 signs in as the highlighted one, Escape closes the list.
+
+`sign-up` adds "Don't have an account? Create one" under the form (class
+`bsky-sign-in__sign-up`, button `__sign-up-button`). Bare, it uses the server's
+default sign-up host; `sign-up="https://pds.example"` names one, which must be on
+the server's `signUpServers`. The button is a second submit button, so it works
+without JavaScript as well. In your own markup, give a submit button
+`data-bsky-sign-up name="signUp" value="1"`.
 
 `remember-accounts` only shows accounts; remembering one is the call to
 `accounts.remember(user)` above, on a page where you know the sign-in worked.
@@ -393,7 +439,7 @@ client component registers it, and the import is a no-op during SSR.
 
 ### From 0.4 to 0.5
 
-Three breaking changes, each a mechanical edit:
+Three breaking changes, each a mechanical edit, and two new error codes:
 
 - `createBlueskyAuth` is now `createAtprotoAuth`, and the types `BlueskyAuth`
   and `BlueskyAuthOptions` are `AtprotoAuth` and `AtprotoAuthOptions`. Nothing in
@@ -405,6 +451,14 @@ Three breaking changes, each a mechanical edit:
   says "Bluesky", and `<bsky-sign-in>`'s default label is
   "Bluesky or Atmosphere handle". Apps that show `AUTH_ERROR_MESSAGES` or the
   default label change wording; apps with their own copy see nothing.
+
+`AuthErrorCode` gains `invalid_server` and `sign_up_unavailable`. A `switch`
+over it that the compiler checks for exhaustiveness needs the two cases.
+
+New, and opt-in: `mode: "identity"`, `authorize()`, `callbackPaths`,
+`bindToBrowser: false`, `onSignInError`, sign-up (`server`, `prompt`,
+`signUpServers`, `client.signUp()`, the element's `sign-up`), and
+`postgresStore`.
 
 Unchanged on purpose, so nobody is signed out and no stylesheet breaks: the
 cookie names (`bsky_sid`, `bsky_auth_nonce`), the routes under `basePath`, the

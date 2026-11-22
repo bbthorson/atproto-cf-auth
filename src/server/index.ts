@@ -1,6 +1,8 @@
 export {
   createAtprotoAuth,
   type AuthorizeInput,
+  type AuthorizeOptions,
+  type AuthorizeTarget,
   type AuthorizeResult,
   type AtprotoAuth,
   type AtprotoAuthOptions,
@@ -34,6 +36,7 @@ export {
   isAuthErrorCode,
   isValidHandle,
   normalizeHandle,
+  normalizeServer,
   type AuthErrorCode,
   type User,
 } from "../shared.js";

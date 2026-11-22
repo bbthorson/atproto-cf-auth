@@ -38,11 +38,19 @@ export interface SignInState {
   error: AuthError | null;
   /** The handle or DID a sign-in is under way for, while `loading`. */
   pending: string | null;
+  /** What's under way while `loading`: a sign-in, or a sign-up. `null` otherwise. */
+  action: "sign-in" | "sign-up" | null;
 }
 
 export interface SignInControllerOptions {
   /** Start the sign-in for a normalised, valid handle or DID. Navigate away, or throw. */
   signIn: (identifier: string) => Promise<void>;
+  /**
+   * Start a sign-up for someone without an account (`client.signUp()`, or
+   * your own route that calls `authorize` with `prompt: "create"`). Navigate
+   * away, or throw. Needed only for `controller.signUp()`.
+   */
+  signUp?: () => Promise<void>;
   /** Remembered accounts to offer above the field. */
   accounts?: RecentAccounts | null;
   /**
@@ -76,6 +84,8 @@ export interface SignInController {
   closeSuggestions(): void;
   /** Sign in as the highlighted suggestion if there is one, else as what's typed. */
   submit(): Promise<void>;
+  /** Start a sign-up through the `signUp` option. Shares the loading and error state with sign-in. */
+  signUp(): Promise<void>;
   /** Sign in as a suggestion or remembered account. */
   choose(account: HandleSuggestion | RecentAccount): Promise<void>;
   /** Drop a remembered account. */
@@ -108,6 +118,7 @@ export function createSignInController(options: SignInControllerOptions): SignIn
     status: "idle",
     error: null,
     pending: null,
+    action: null,
   };
   const listeners = new Set<() => void>();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -134,7 +145,7 @@ export function createSignInController(options: SignInControllerOptions): SignIn
   // Back from the authorization server via the back button, the page may come
   // out of the back/forward cache still showing "Signing in…".
   const onPageShow = (event: PageTransitionEvent) => {
-    if (event.persisted && state.status === "loading") set({ status: "idle", pending: null });
+    if (event.persisted && state.status === "loading") set({ status: "idle", pending: null, action: null });
   };
   if (typeof window !== "undefined") window.addEventListener("pageshow", onPageShow);
 
@@ -146,12 +157,12 @@ export function createSignInController(options: SignInControllerOptions): SignIn
       set({ status: "error", error: new AuthError("invalid_handle"), suggestions: [], activeIndex: -1 });
       return;
     }
-    set({ status: "loading", error: null, pending: identifier, suggestions: [], activeIndex: -1 });
+    set({ status: "loading", error: null, pending: identifier, action: "sign-in", suggestions: [], activeIndex: -1 });
     try {
       await options.signIn(identifier);
       // Navigation is under way; stay loading until the page goes.
     } catch (error) {
-      set({ status: "error", error: toError(error), pending: null });
+      set({ status: "error", error: toError(error), pending: null, action: null });
     }
   }
 
@@ -214,6 +225,18 @@ export function createSignInController(options: SignInControllerOptions): SignIn
       return start(state.query);
     },
 
+    async signUp() {
+      if (!options.signUp) throw new Error("createSignInController: pass a `signUp` option to use signUp()");
+      if (state.status === "loading") return;
+      cancelSearch();
+      set({ status: "loading", error: null, pending: null, action: "sign-up", suggestions: [], activeIndex: -1 });
+      try {
+        await options.signUp();
+      } catch (error) {
+        set({ status: "error", error: toError(error), action: null });
+      }
+    },
+
     async choose(account) {
       if (state.status === "loading") return;
       set({ query: account.handle });
@@ -229,7 +252,7 @@ export function createSignInController(options: SignInControllerOptions): SignIn
     },
 
     setError(error) {
-      set(error ? { status: "error", error, pending: null } : { status: "idle", error: null });
+      set(error ? { status: "error", error, pending: null, action: null } : { status: "idle", error: null });
     },
 
     destroy() {

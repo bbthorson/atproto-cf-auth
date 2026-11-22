@@ -117,4 +117,36 @@ describe("<bsky-sign-in>", () => {
     const login = fetch.mock.calls.find(([url]) => String(url) === "/auth/login");
     expect(JSON.parse(String((login?.[1] as RequestInit).body))).toEqual({ handle: "alice.bsky.social" });
   });
+
+  it("offers sign-up as its own submit button, which also works without JavaScript", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ url: "https://bsky.social/oauth/authorize?request_uri=x" }), { status: 200 }),
+    );
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const el = await mount('<bsky-sign-in sign-up="bsky.social" return-to="/welcome" sign-up-label="Join"></bsky-sign-in>');
+    const signUp = el.querySelector<HTMLButtonElement>("[data-bsky-sign-up]")!;
+    expect(signUp.textContent).toBe("Join");
+    // The no-JS post: a submit button named signUp, and the server alongside.
+    expect([signUp.type, signUp.name, signUp.value]).toEqual(["submit", "signUp", "1"]);
+    expect(el.querySelector<HTMLInputElement>("input[name=server]")!.value).toBe("bsky.social");
+    // Enter in the field still means sign in: the main button comes first.
+    expect(el.querySelector("button")!.className).toBe("bsky-sign-in__button");
+
+    const submit = new Event("submit", { cancelable: true }) as SubmitEvent;
+    Object.defineProperty(submit, "submitter", { value: signUp });
+    el.querySelector("form")!.dispatchEvent(submit);
+    await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("https://bsky.social/oauth/authorize?request_uri=x"));
+    expect(JSON.parse(String((fetch.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
+      signUp: true,
+      server: "https://bsky.social",
+      returnTo: "/welcome",
+    });
+    expect(el.dataset["state"]).toBe("loading");
+    expect(signUp.disabled).toBe(true);
+  });
+
+  it("has no sign-up button unless asked", async () => {
+    const el = await mount("<bsky-sign-in></bsky-sign-in>");
+    expect(el.querySelector("[data-bsky-sign-up]")).toBeNull();
+  });
 });

@@ -24,6 +24,11 @@
  *       </form>
  *     </bsky-sign-in>
  *
+ * `sign-up` adds a "Don't have an account? Create one" button, which starts an
+ * account on the server's default sign-up host (or the one the attribute
+ * names, `sign-up="https://bsky.social"`). In your own markup, give a submit
+ * button `data-bsky-sign-up` (and `name="signUp" value="1"` for the no-JS post).
+ *
  * Without JavaScript the form still works: it posts to `{base-path}/login`,
  * which redirects to the person's authorization server.
  *
@@ -90,7 +95,9 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
       if (!this.querySelector("form")) this.renderDefault();
       this.form = this.querySelector("form");
       this.input = this.querySelector('input[name="handle"]');
-      this.button = this.form?.querySelector('button:not([type="button"]), input[type="submit"]') ?? null;
+      this.button =
+        this.form?.querySelector('button:not([type="button"]):not([data-bsky-sign-up]), input[type="submit"]:not([data-bsky-sign-up])') ??
+        null;
       this.errorEl = this.querySelector("[data-bsky-error]");
       this.accountsEl = this.querySelector("[data-bsky-accounts]");
       this.dividerEl = this.querySelector("[data-bsky-divider]");
@@ -128,8 +135,12 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
       if (this.dividerEl) this.dividerEl.hidden = true;
 
       const client = createAuthClient({ basePath: this.basePath });
+      // `sign-up` alone uses the server's default; `sign-up="https://…"` names one.
+      const signUpServer = this.getAttribute("sign-up") || undefined;
       this.controller = createSignInController({
         signIn: (handle) => client.signIn(handle, returnTo ? { returnTo } : {}),
+        signUp: () =>
+          client.signUp({ ...(signUpServer ? { server: signUpServer } : {}), ...(returnTo ? { returnTo } : {}) }),
         accounts: this.hasAttribute("remember-accounts") && this.accountsEl ? createRecentAccounts() : null,
         typeahead,
       });
@@ -216,6 +227,28 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
       error.hidden = true;
 
       form.append(accounts, divider, label, field, button, error);
+
+      // Someone without an account. A submit button of its own, so it works
+      // without JavaScript too: the form posts `signUp=1` to /login.
+      if (this.hasAttribute("sign-up")) {
+        const row = el("p", `${C}__sign-up`, `${this.getAttribute("sign-up-prompt") ?? "Don't have an account?"} `);
+        const signUp = el("button", `${C}__sign-up-button`, this.getAttribute("sign-up-label") ?? "Create one");
+        signUp.type = "submit";
+        signUp.name = "signUp";
+        signUp.value = "1";
+        signUp.formNoValidate = true;
+        signUp.setAttribute("data-bsky-sign-up", "");
+        row.append(signUp);
+        const server = this.getAttribute("sign-up");
+        if (server) {
+          const hidden = el("input", "");
+          hidden.type = "hidden";
+          hidden.name = "server";
+          hidden.value = server;
+          row.append(hidden);
+        }
+        form.append(row);
+      }
       this.append(form);
     }
 
@@ -239,7 +272,7 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
       const loading = state.status === "loading";
       this.toggleAttribute("aria-busy", loading);
       if (this.input) this.input.readOnly = loading;
-      for (const b of this.querySelectorAll<HTMLButtonElement>(`[data-bsky-choose], [data-bsky-forget]`)) b.disabled = loading;
+      for (const b of this.querySelectorAll<HTMLButtonElement>(`[data-bsky-choose], [data-bsky-forget], [data-bsky-sign-up]`)) b.disabled = loading;
       if (this.button) {
         this.button.disabled = loading;
         const loadingLabel = this.getAttribute("loading-label");
@@ -304,6 +337,11 @@ export function defineSignInElement(tagName = "bsky-sign-in"): void {
       event.preventDefault();
       if (!this.controller) return;
       // The field is the source of truth: autofill doesn't always fire `input`.
+      const submitter = (event as SubmitEvent).submitter;
+      if (submitter?.hasAttribute("data-bsky-sign-up")) {
+        void this.controller.signUp();
+        return;
+      }
       if (this.input && this.input.value !== this.controller.getState().query) this.controller.setQuery(this.input.value);
       void this.controller.submit();
     };

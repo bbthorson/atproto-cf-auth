@@ -108,6 +108,28 @@ describe("createSignInController", () => {
     expect(controller.getState().accounts).toEqual([]);
   });
 
+  it("signs up through the signUp option, sharing loading and error state", async () => {
+    let fail = true;
+    const signUp = vi.fn(async () => {
+      if (fail) throw new AuthError("sign_up_unavailable");
+    });
+    const controller = createSignInController({ signIn: async () => {}, signUp });
+    await controller.signUp();
+    expect(controller.getState()).toMatchObject({ status: "error", error: { code: "sign_up_unavailable" }, action: null });
+
+    fail = false;
+    await controller.signUp();
+    expect(controller.getState()).toMatchObject({ status: "loading", action: "sign-up", pending: null, error: null });
+    // One thing at a time: a sign-in can't start while the sign-up navigates.
+    controller.setQuery("alice.bsky.social");
+    await controller.submit();
+    expect(controller.getState().action).toBe("sign-up");
+  });
+
+  it("says so when signUp() is used without the option", async () => {
+    await expect(createSignInController({ signIn: async () => {} }).signUp()).rejects.toThrow(/signUp/);
+  });
+
   it("recovers from the back/forward cache instead of spinning forever", async () => {
     const controller = createSignInController({ signIn: async () => {} });
     controller.setQuery("alice.bsky.social");

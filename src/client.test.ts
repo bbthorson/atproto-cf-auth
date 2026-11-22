@@ -43,6 +43,34 @@ describe("createAuthClient", () => {
   });
 });
 
+describe("signUp", () => {
+  it("asks the server to start a sign-up and navigates to the host", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ url: "https://bsky.social/oauth/authorize?request_uri=x" }));
+    const navigate = vi.fn();
+    await createAuthClient({ fetch, navigate }).signUp({ server: "bsky.social", returnTo: "/welcome" });
+    expect(JSON.parse((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
+      signUp: true,
+      server: "https://bsky.social",
+      returnTo: "/welcome",
+    });
+    expect(navigate).toHaveBeenCalledWith("https://bsky.social/oauth/authorize?request_uri=x");
+  });
+
+  it("leaves the server to the server's default, and reports refusals", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ error: "sign_up_unavailable" }, 400));
+    await expect(createAuthClient({ fetch }).signUp()).rejects.toMatchObject({ code: "sign_up_unavailable" });
+    expect(JSON.parse((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ signUp: true });
+  });
+
+  it("rejects a server address before calling anything", async () => {
+    const fetch = vi.fn();
+    await expect(createAuthClient({ fetch }).signUp({ server: "http://insecure.example" })).rejects.toMatchObject({
+      code: "invalid_server",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("takeAuthError", () => {
   it("reads ?auth_error= once and removes it from the URL", () => {
     window.history.replaceState(null, "", "/join?auth_error=access_denied&x=1#top");

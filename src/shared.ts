@@ -15,6 +15,8 @@ export interface User {
 
 export type AuthErrorCode =
   | "invalid_handle"
+  | "invalid_server"
+  | "sign_up_unavailable"
   | "handle_not_found"
   | "authorize_failed"
   | "access_denied"
@@ -27,6 +29,8 @@ export type AuthErrorCode =
 /** Default English copy. Apps with their own voice can map codes themselves. */
 export const AUTH_ERROR_MESSAGES: Readonly<Record<AuthErrorCode, string>> = {
   invalid_handle: "That doesn't look like a handle. Try something like you.bsky.social.",
+  invalid_server: "That doesn't look like a server address. Try something like bsky.social.",
+  sign_up_unavailable: "That server doesn't offer sign-up here. Try another, or sign in with an account you have.",
   handle_not_found: "We couldn't find that handle. Double-check it and try again.",
   authorize_failed: "Your account's server didn't respond. Try again in a moment.",
   access_denied: "Sign-in was cancelled.",
@@ -95,4 +99,22 @@ export function safeReturnTo(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.startsWith("/")) return undefined;
   if (value.startsWith("//") || value.includes("\\") || /[\u0000-\u001f]/.test(value)) return undefined;
   return value;
+}
+
+/**
+ * Turn a server address someone typed or an app configured (`bsky.social`,
+ * `https://bsky.social/`) into an https origin, or `undefined` when it isn't
+ * one. Only https: authorization servers are reached over it.
+ */
+export function normalizeServer(input: string): string | undefined {
+  let value = input.normalize("NFKC").trim();
+  if (!value) return undefined;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) value = `https://${value}`;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || !url.hostname.includes(".")) return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
 }

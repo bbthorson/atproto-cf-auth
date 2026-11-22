@@ -16,6 +16,7 @@ import {
   AUTH_ERROR_PARAM,
   isValidHandle,
   normalizeHandle,
+  normalizeServer,
   safeReturnTo,
   type AuthErrorCode,
   type User,
@@ -110,6 +111,13 @@ export interface AtprotoAuthOptions {
    */
   callbackPaths?: string[];
   /**
+   * Servers `POST {basePath}/login` may start a sign-up at, when the body says
+   * `signUp: true`. The first is the default; a request may name another only
+   * if it's on this list. Default `["https://bsky.social"]`; `[]` turns sign-up
+   * off on that route (`authorize` takes any server the app passes).
+   */
+  signUpServers?: string[];
+  /**
    * Called once per successful sign-in, before the redirect, with the flow's
    * `context` and `returnTo`. Return a `Response` to answer the callback
    * yourself (in `"identity"` mode, this is where the app sets its own session
@@ -155,9 +163,40 @@ export interface SignInFlow {
   callbackPath: string;
 }
 
-export interface AuthorizeInput {
-  /** What the person typed: a handle or DID. Normalised and checked here. */
-  handle: string;
+/**
+ * Who to sign in: an account (`handle`), or a server to start at (`server`),
+ * which is how a sign-up begins. Exactly one of the two.
+ */
+export type AuthorizeInput = AuthorizeTarget & AuthorizeOptions;
+
+export type AuthorizeTarget =
+  | {
+      /** What the person typed: a handle or DID. Normalised and checked here. */
+      handle: string;
+      server?: never;
+    }
+  | {
+      /**
+       * An authorization server or PDS to start at, such as
+       * `https://bsky.social`, for someone without an account (with `prompt:
+       * "create"`) or who doesn't know their handle. `bsky.social` works too;
+       * only https is accepted. The app chooses it: never pass a server straight
+       * from a request without checking it against a list, or a browser can make
+       * your Worker fetch any URL's metadata.
+       */
+      server: string;
+      handle?: never;
+    };
+
+export interface AuthorizeOptions {
+  /**
+   * Passed to the authorization server. `"create"` asks for its sign-up page
+   * (checked first against the `prompt_values_supported` it publishes: if it
+   * doesn't list `create`, the result is `sign_up_unavailable` and the person
+   * stays on your page). `"login"` asks it to sign in again even with a session,
+   * `"select_account"` to let the person pick an account.
+   */
+  prompt?: "login" | "select_account" | "consent" | "create";
   /** Same-site path to land on afterwards. Anything else is dropped. */
   returnTo?: string;
   /**
@@ -287,6 +326,11 @@ export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
   const publishedScope = joinScopes(scope, ...conditionalScopes.map((c) => c.scope));
   const sessionTtl = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
   const identityOnly = options.mode === "identity";
+  const signUpServers = (options.signUpServers ?? ["https://bsky.social"]).map((raw) => {
+    const server = normalizeServer(raw);
+    if (!server) throw new Error(`atproto-cf-auth: invalid sign-up server ${JSON.stringify(raw)}`);
+    return server;
+  });
   const callbackPaths = ["/callback"];
   for (const raw of options.callbackPaths ?? []) {
     const path = `/${raw.replace(/^\/+|\/+$/g, "")}`;
@@ -527,8 +571,19 @@ export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
     // The nonce cookie set here must come back on the redirect to 127.0.0.1.
     if (url.hostname === "localhost") return { ok: false, error: "use_loopback_ip", status: 400 };
 
-    const handle = normalizeHandle(input.handle);
-    if (!isValidHandle(handle)) return { ok: false, error: "invalid_handle", status: 400 };
+    // Who: an account (handle or DID), or a server to start at.
+    let target: string;
+    let isServer = false;
+    if (typeof input.server === "string") {
+      const server = normalizeServer(input.server);
+      if (!server) return { ok: false, error: "invalid_server", status: 400 };
+      target = server;
+      isServer = true;
+    } else {
+      target = normalizeHandle(input.handle ?? "");
+      if (!isValidHandle(target)) return { ok: false, error: "invalid_handle", status: 400 };
+    }
+    const prompt = input.prompt;
 
     const callbackPath = input.callbackPath ?? "/callback";
     if (!callbackPaths.includes(callbackPath)) {
@@ -548,12 +603,21 @@ export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
     try {
       const client = await clientFor(url.origin);
       const redirectUri = redirectUriFor(client, callbackPath);
+      if (prompt === "create") {
+        // Send nobody to a sign-up page the server says it doesn't have.
+        const { metadata } = await client.oauthResolver.resolve(target);
+        if (!metadata.prompt_values_supported?.includes("create")) {
+          return { ok: false, error: "sign_up_unavailable", status: 400 };
+        }
+      }
       // `state` is kept server-side by the client and handed back by callback();
       // only a random key travels through the PDS.
-      authorizeUrl = await client.authorize(handle, {
+      authorizeUrl = await client.authorize(target, {
         state: JSON.stringify(state),
-        scope: await scopeFor(client, handle),
+        // A server has no account to test conditional scopes against yet.
+        scope: isServer ? scope : await scopeFor(client, target),
         ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+        ...(prompt ? { prompt } : {}),
       });
     } catch (err) {
       // Only a failed handle → DID lookup is the person's typo; a PDS that
@@ -571,22 +635,34 @@ export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
   }
 
   async function login(request: Request): Promise<Response> {
-    let rawHandle: unknown;
-    let rawReturnTo: unknown;
+    let fields: { handle?: unknown; returnTo?: unknown; signUp?: unknown; server?: unknown } | null;
     if (isFormPost(request)) {
       const form = await request.formData();
-      rawHandle = form.get("handle");
-      rawReturnTo = form.get("returnTo");
+      fields = {
+        handle: form.get("handle"),
+        returnTo: form.get("returnTo"),
+        signUp: form.get("signUp"),
+        server: form.get("server"),
+      };
     } else {
-      const body = (await request.json().catch(() => null)) as { handle?: unknown; returnTo?: unknown } | null;
-      rawHandle = body?.handle;
-      rawReturnTo = body?.returnTo;
+      const body: unknown = await request.json().catch(() => null);
+      fields = typeof body === "object" && body !== null ? (body as typeof fields) : null;
     }
-    const returnTo = safeReturnTo(rawReturnTo);
-    const result = await authorize(request, {
-      handle: typeof rawHandle === "string" ? rawHandle : "",
-      ...(returnTo ? { returnTo } : {}),
-    });
+    const returnTo = safeReturnTo(fields?.returnTo);
+    const common = returnTo ? { returnTo } : {};
+
+    let result: AuthorizeResult;
+    const signUp = fields?.signUp === true || fields?.signUp === "1" || fields?.signUp === "true";
+    if (signUp) {
+      // Only a listed server: anything else would let a browser make this
+      // Worker fetch whatever URL it names.
+      const requested = typeof fields?.server === "string" && fields.server ? normalizeServer(fields.server) : signUpServers[0];
+      if (signUpServers.length === 0) return loginError(request, "sign_up_unavailable", 400, returnTo);
+      if (!requested || !signUpServers.includes(requested)) return loginError(request, "invalid_server", 400, returnTo);
+      result = await authorize(request, { server: requested, prompt: "create", ...common });
+    } else {
+      result = await authorize(request, { handle: typeof fields?.handle === "string" ? fields.handle : "", ...common });
+    }
     if (!result.ok) return loginError(request, result.error, result.status, returnTo);
     const response = isFormPost(request) ? redirect(result.url) : json({ url: result.url });
     for (const cookie of result.cookies) appendSetCookie(response, cookie);
