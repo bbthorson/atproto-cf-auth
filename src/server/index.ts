@@ -41,3 +41,10 @@ export {
   type User,
 } from "../shared.js";
 export type { OAuthSession, RuntimeLock } from "@atproto/oauth-client";
+/**
+ * What `onSignInError`'s `cause` is when the authorization server sent the
+ * person back with an error (`cause.params.get("error")`) or the callback was
+ * malformed. Re-exported so apps check `instanceof` against the same class the
+ * library threw, whatever copy of `@atproto/oauth-client` they have themselves.
+ */
+export { OAuthCallbackError } from "@atproto/oauth-client";
