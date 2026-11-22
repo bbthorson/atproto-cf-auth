@@ -438,6 +438,14 @@ client component registers it, and the import is a no-op during SSR.
 
 ## Upgrading
 
+### 0.5.2
+
+`@atproto/oauth-client` moves from 0.8 to 0.9.6 (its 0.9.0 split the resolver
+into `@atproto/oauth-resolver`; nothing the library uses changed). The server
+entry re-exports `OAuthCallbackError`, for telling an authorization server's
+error apart in `onSignInError` without depending on `@atproto/oauth-client`
+yourself.
+
 ### 0.5.1
 
 Additive: `appName` may be a function of the origin, and a failed
