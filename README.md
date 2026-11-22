@@ -43,7 +43,8 @@ With Astro: call `auth.handle(context.request)` from middleware or from an
 `conditionalScopes`, `privateKeys` (see [Confidential client](#confidential-client)),
 `origin` (see [Outside a request](#outside-a-request)), `sessionTtlSeconds`
 (default 30 days), `cookieName`, `metadata` (logo, terms and privacy URLs for the
-consent screen), `onSignIn`, `handleResolver` and `requestLock` (see [Lock](#lock)).
+consent screen), `mode`, `callbackPaths`, `onSignIn` and `onSignInError` (see
+[Identity only](#identity-only)), `handleResolver` and `requestLock` (see [Lock](#lock)).
 
 **Identity lookups on Workers.** Workers refuse `redirect: "error"`, in `fetch()`
 and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
@@ -58,6 +59,74 @@ with `handle_not_found`.
 then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
 you do this from concurrent requests (two `fetch`es from one page is enough),
 add the lock below.
+
+### Identity only
+
+Apps that already have sessions of their own often need only one thing from
+AT-Proto: proof that this person controls this DID. Set `mode: "identity"` and
+the library proves it, then hands over. It keeps nothing: it sets no session
+cookie, serves no `/session` or `/logout`, and revokes the OAuth tokens as soon
+as the sign-in is verified.
+
+```ts
+const auth = createBlueskyAuth({
+  appName: "Inbox",
+  store: postgresStore((text, params) => sql.query(text, params)),
+  secret: env.AUTH_SECRET,
+  basePath: "/api/v1/atproto",
+  mode: "identity",
+  async onSignIn(user, request, flow) {
+    const account = await findOrCreateAccount(user.did, user.handle);
+    if (account.disabled) return redirectTo("/login?error=account_disabled");
+    return startAppSession(account, flow.returnTo ?? "/"); // a Response that sets your cookie
+  },
+  onSignInError: ({ code }) => redirectTo(`/login?error=${code}`),
+});
+```
+
+`onSignIn` (in either mode) may return a `Response` to answer the callback
+itself; in the default `"session"` mode the library's session cookie is added to
+it. A throw fails the sign-in as `callback_failed`. `onSignInError` gets every
+failed callback (`access_denied`, `browser_mismatch`, `callback_failed`) with the
+flow when it could be read, and may return a `Response` too; otherwise the
+browser goes back with `?auth_error=<code>`.
+
+### Starting a sign-in from your own route
+
+`POST {basePath}/login` covers the common case. For your own API shape, or to
+carry something through the sign-in, call `authorize`:
+
+```ts
+app.post("/api/v1/sign-in", async (c) => {
+  const { handle } = await c.req.json();
+  const result = await auth.authorize(c.req.raw, {
+    handle,
+    returnTo: "/inbox",
+    context: { flow: "creator" }, // handed back as `flow.context`
+  });
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  const res = c.json({ url: result.url });
+  for (const cookie of result.cookies) res.headers.append("set-cookie", cookie);
+  return res;
+});
+```
+
+`context` is any JSON value. It is kept with the OAuth state in your store,
+sealed, and never travels through the browser or the authorization server, so it
+may hold a secret. Keep it small.
+
+**Callback paths.** List further paths in `callbackPaths` (`["/callback/mobile"]`)
+and pick one per sign-in with `callbackPath`. Each is published as a redirect URI
+and answered by `handle()`; a sign-in must come back to the path it was sent to.
+Use one where flows need telling apart before their state is read, such as a
+path a native app claims as a universal link.
+
+**Unbound flows.** Every sign-in is tied to the browser that started it by a
+nonce cookie, which is what stops login CSRF: someone finishing their own
+sign-in in your browser. A native app that hands off to the system browser
+can't keep that cookie. For that case only, `bindToBrowser: false` drops the
+cookie, and the app must bind the flow itself: put a verifier only it holds in
+`context`, and have `onSignIn` hand the result over only to whoever presents it.
 
 ### Scopes
 
@@ -194,6 +263,7 @@ request at another location may read the old tokens for up to a minute.
 | Store | Use when |
 |---|---|
 | `d1Store(env.DB)` | You have D1. Strongly consistent; creates a `bsky_auth` table on first use. |
+| `postgresStore(query)` | You have Postgres: Neon (`(text, params) => sql.query(text, params)`), Hyperdrive or node-postgres (`pool.query`), PGlite. Strongly consistent. Creates a `bsky_auth` table on first use, or pass `createTable: false` and a `table` your migrations own. |
 | `kvStore(env.KV)` | You'd rather not add a database. Eventually consistent, so a sign-in that starts and finishes at different Cloudflare locations can fail. |
 | `memoryStore()` | Tests only. |
 
@@ -206,7 +276,9 @@ as a user. Changing the secret signs everyone out.
 - The session cookie is an opaque random id (`HttpOnly`, `SameSite=Lax`, `Secure`
   on https). The DID never sits in a cookie.
 - A short-lived nonce cookie ties each callback to the browser that started it,
-  which blocks login CSRF.
+  which blocks login CSRF. (Unless a flow opts out with `bindToBrowser: false`;
+  see [Unbound flows](#starting-a-sign-in-from-your-own-route).)
+- In `"identity"` mode no OAuth token outlives the callback.
 - `/login` and `/logout` refuse cross-site POSTs.
 - `returnTo` only accepts same-site paths, so it can't become an open redirect.
 - The client_id is derived from the request origin, so one deploy works on
