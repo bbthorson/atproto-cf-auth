@@ -440,7 +440,8 @@ client component registers it, and the import is a no-op during SSR.
 
 ### 0.5.1
 
-Additive: `appName` may be a function of the origin.
+Additive: `appName` may be a function of the origin, and a failed
+`authorize()` carries the thrown error as `cause`, for your logs.
 
 ### From 0.4 to 0.5
 

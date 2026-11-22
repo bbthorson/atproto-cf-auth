@@ -230,7 +230,13 @@ export type AuthorizeResult =
       /** `Set-Cookie` values to put on whatever response sends the browser there. */
       cookies: string[];
     }
-  | { ok: false; error: AuthErrorCode; status: number };
+  | {
+      ok: false;
+      error: AuthErrorCode;
+      status: number;
+      /** What was thrown, when something was: log it, but don't show it to the person. */
+      cause?: unknown;
+    };
 
 export interface AtprotoAuth {
   /**
@@ -629,7 +635,7 @@ export function createAtprotoAuth(options: AtprotoAuthOptions): AtprotoAuth {
       const code: AuthErrorCode = /resolve identity|unable to resolve handle/i.test(String(err))
         ? "handle_not_found"
         : "authorize_failed";
-      return { ok: false, error: code, status: code === "handle_not_found" ? 400 : 502 };
+      return { ok: false, error: code, status: code === "handle_not_found" ? 400 : 502, cause: err };
     }
 
     const cookies = nonce
