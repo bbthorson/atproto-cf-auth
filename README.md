@@ -8,6 +8,49 @@ It runs on Web Crypto and `fetch` only. You don't need the `nodejs_compat`
 flag or `@atproto/oauth-client-node`, and it adds about 95 KiB gzipped to a
 Worker.
 
+## Why this exists
+
+AT-Proto already has official OAuth libraries. This package doesn't replace
+them; it is built on `@atproto/oauth-client`, which does the protocol work
+(PAR, PKCE, DPoP, token refresh, finding a user's authorization server). What
+the official packages leave out is a way to run that on Cloudflare Workers and
+the server and UI pieces every app ends up writing around it.
+
+| Package | What it is | Why it isn't enough on Workers |
+|---|---|---|
+| `@atproto/oauth-client-node` | The client for Node servers. | It depends on `node:crypto` and a Node handle resolver whose undici SSRF guard throws on Workers. Turning on `nodejs_compat` doesn't fix the resolver. |
+| `@atproto/oauth-client-browser` | The client for single-page apps, with no server. | Tokens live in the browser's IndexedDB, and the app can only be a public client, which authorization servers give shorter sessions. Your Worker can't act for anyone, and you have no server-side session to check. |
+| `@atproto/oauth-client` | The runtime-neutral base the other two are built on. | It runs anywhere, but you supply everything else: the crypto runtime, state and session stores, a refresh lock, the HTTP routes, cookies, client metadata, and identity resolvers that work on Workers. |
+
+This package is that "everything else" for Workers:
+
+- **A Web Crypto runtime** for `@atproto/oauth-client`, so no `nodejs_compat`.
+- **Identity lookups that work on Workers.** The stock DID and handle resolvers
+  ask `fetch` for `redirect: "error"`, which Workers refuse, so DID documents
+  and every `*.bsky.social` handle fail to load. The package ships resolvers that avoid it (see
+  [Server](#server)).
+- **Stores for D1, KV and Postgres**, with everything sealed under your secret,
+  including DPoP keys and refresh tokens.
+- **The HTTP side:** `/login`, `/callback`, `/logout`, `/session`, client
+  metadata and JWKS routes; an opaque session cookie; a nonce cookie against
+  login CSRF; same-site `returnTo` checks; and a `client_id` derived from the
+  request origin, so one deploy works on workers.dev, a custom domain and
+  `127.0.0.1`.
+- **Refreshes that don't sign people out.** A refresh token can be used once,
+  and Workers run requests on many isolates at once. A Durable Object lock
+  serialises each user's refreshes (see [Lock](#lock)).
+- **Patterns the base client doesn't cover:** identity-only sign-in for apps
+  with sessions of their own, confidential clients, scopes asked for only when
+  a user's PDS supports them, sign-up via `prompt=create`, and sessions handed
+  over outside the redirect flow.
+- **Browser pieces with no framework:** a headless client, a sign-in
+  controller with handle typeahead and remembered accounts, and a
+  `<bsky-sign-in>` element.
+
+**When to use something else.** On a Node server, use
+`@atproto/oauth-client-node`. For an app with no backend, where the browser
+talks to the PDS directly, use `@atproto/oauth-client-browser`.
+
 ## Server
 
 ```ts
