@@ -4,8 +4,7 @@ Bluesky sign-in (AT-Proto OAuth) for apps on Cloudflare Workers. It has a
 server half that runs the OAuth flow and keeps sessions, and a framework-free
 browser half: a headless client and a `<bsky-sign-in>` element.
 
-It runs on Web Crypto and `fetch` only. You don't need the `nodejs_compat`
-flag or `@atproto/oauth-client-node`, and it adds about 95 KiB gzipped to a
+It runs on Web Crypto and `fetch` only, and adds about 95 KiB gzipped to a
 Worker.
 
 ## Why this exists
@@ -25,10 +24,8 @@ the server and UI pieces every app ends up writing around it.
 This package is that "everything else" for Workers:
 
 - **A Web Crypto runtime** for `@atproto/oauth-client`, so no `nodejs_compat`.
-- **Identity lookups that work on Workers.** The stock DID and handle resolvers
-  ask `fetch` for `redirect: "error"`, which Workers refuse, so DID documents
-  and every `*.bsky.social` handle fail to load. The package ships resolvers that avoid it (see
-  [Server](#server)).
+- **Identity lookups that work on Workers**, where the stock resolvers fail
+  (see [Server](#server)).
 - **Stores for D1, KV and Postgres**, with everything sealed under your secret,
   including DPoP keys and refresh tokens.
 - **The HTTP side:** `/login`, `/callback`, `/logout`, `/session`, client
@@ -96,9 +93,9 @@ and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
 a handle's `/.well-known/atproto-did` and a DID document. So the package ships
 its own DID resolver and gives the default handle resolver a `fetch` that sends
 `redirect: "manual"` and still refuses a redirect. If you pass your own
-`handleResolver`, give it the same treatment. Before 0.2.1, every handle
-without an `_atproto` DNS record, which is every `*.bsky.social` handle, failed
-with `handle_not_found`.
+`handleResolver`, give it the same treatment. Without it, DID documents and
+every handle without an `_atproto` DNS record, which is every `*.bsky.social`
+handle, fail to load.
 
 **To call the user's PDS:** `const session = await auth.getOAuthSession(request)`,
 then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
