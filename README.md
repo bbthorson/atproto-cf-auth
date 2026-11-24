@@ -476,48 +476,6 @@ without JavaScript as well. In your own markup, give a submit button
 In React, render `<bsky-sign-in>` like any element. Importing the module in a
 client component registers it, and the import is a no-op during SSR.
 
-## Upgrading
-
-### 0.5.2
-
-`@atproto/oauth-client` moves from 0.8 to 0.9.6 (its 0.9.0 split the resolver
-into `@atproto/oauth-resolver`; nothing the library uses changed). The server
-entry re-exports `OAuthCallbackError`, for telling an authorization server's
-error apart in `onSignInError` without depending on `@atproto/oauth-client`
-yourself.
-
-### 0.5.1
-
-Additive: `appName` may be a function of the origin, and a failed
-`authorize()` carries the thrown error as `cause`, for your logs.
-
-### From 0.4 to 0.5
-
-Three breaking changes, each a mechanical edit, and two new error codes:
-
-- `createBlueskyAuth` is now `createAtprotoAuth`, and the types `BlueskyAuth`
-  and `BlueskyAuthOptions` are `AtprotoAuth` and `AtprotoAuthOptions`. Nothing in
-  the library is specific to Bluesky's servers.
-- `onSignIn` takes one object: `onSignIn: (user, request) => …` becomes
-  `onSignIn: ({ user, request }) => …`. It also gets `flow`, and may now return a
-  `Response`.
-- The default error copy for `invalid_handle` and `authorize_failed` no longer
-  says "Bluesky", and `<bsky-sign-in>`'s default label is
-  "Bluesky or Atmosphere handle". Apps that show `AUTH_ERROR_MESSAGES` or the
-  default label change wording; apps with their own copy see nothing.
-
-`AuthErrorCode` gains `invalid_server` and `sign_up_unavailable`. A `switch`
-over it that the compiler checks for exhaustiveness needs the two cases.
-
-New, and opt-in: `mode: "identity"`, `authorize()`, `callbackPaths`,
-`bindToBrowser: false`, `onSignInError`, sign-up (`server`, `prompt`,
-`signUpServers`, `client.signUp()`, the element's `sign-up`), and
-`postgresStore`.
-
-Unchanged on purpose, so nobody is signed out and no stylesheet breaks: the
-cookie names (`bsky_sid`, `bsky_auth_nonce`), the routes under `basePath`, the
-`<bsky-sign-in>` tag and its class names, and what's in the store.
-
 ## Develop
 
 ```bash
