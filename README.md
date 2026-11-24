@@ -4,9 +4,49 @@ Bluesky sign-in (AT-Proto OAuth) for apps on Cloudflare Workers. It has a
 server half that runs the OAuth flow and keeps sessions, and a framework-free
 browser half: a headless client and a `<bsky-sign-in>` element.
 
-It runs on Web Crypto and `fetch` only. You don't need the `nodejs_compat`
-flag or `@atproto/oauth-client-node`, and it adds about 95 KiB gzipped to a
+It runs on Web Crypto and `fetch` only, and adds about 95 KiB gzipped to a
 Worker.
+
+## Why this exists
+
+AT-Proto already has official OAuth libraries. This package doesn't replace
+them; it is built on `@atproto/oauth-client`, which does the protocol work
+(PAR, PKCE, DPoP, token refresh, finding a user's authorization server). What
+the official packages leave out is a way to run that on Cloudflare Workers and
+the server and UI pieces every app ends up writing around it.
+
+| Package | What it is | Why it isn't enough on Workers |
+|---|---|---|
+| `@atproto/oauth-client-node` | The client for Node servers. | It depends on `node:crypto` and a Node handle resolver whose undici SSRF guard throws on Workers. Turning on `nodejs_compat` doesn't fix the resolver. |
+| `@atproto/oauth-client-browser` | The client for single-page apps, with no server. | Tokens live in the browser's IndexedDB, and the app can only be a public client, which authorization servers give shorter sessions. Your Worker can't act for anyone, and you have no server-side session to check. |
+| `@atproto/oauth-client` | The runtime-neutral base the other two are built on. | It runs anywhere, but you supply everything else: the crypto runtime, state and session stores, a refresh lock, the HTTP routes, cookies, client metadata, and identity resolvers that work on Workers. |
+
+This package is that "everything else" for Workers:
+
+- **A Web Crypto runtime** for `@atproto/oauth-client`, so no `nodejs_compat`.
+- **Identity lookups that work on Workers**, where the stock resolvers fail
+  (see [Server](#server)).
+- **Stores for D1, KV and Postgres**, with everything sealed under your secret,
+  including DPoP keys and refresh tokens.
+- **The HTTP side:** `/login`, `/callback`, `/logout`, `/session`, client
+  metadata and JWKS routes; an opaque session cookie; a nonce cookie against
+  login CSRF; same-site `returnTo` checks; and a `client_id` derived from the
+  request origin, so one deploy works on workers.dev, a custom domain and
+  `127.0.0.1`.
+- **Refreshes that don't sign people out.** A refresh token can be used once,
+  and Workers run requests on many isolates at once. A Durable Object lock
+  serialises each user's refreshes (see [Lock](#lock)).
+- **Patterns the base client doesn't cover:** identity-only sign-in for apps
+  with sessions of their own, confidential clients, scopes asked for only when
+  a user's PDS supports them, sign-up via `prompt=create`, and sessions handed
+  over outside the redirect flow.
+- **Browser pieces with no framework:** a headless client, a sign-in
+  controller with handle typeahead and remembered accounts, and a
+  `<bsky-sign-in>` element.
+
+**When to use something else.** On a Node server, use
+`@atproto/oauth-client-node`. For an app with no backend, where the browser
+talks to the PDS directly, use `@atproto/oauth-client-browser`.
 
 ## Server
 
@@ -53,9 +93,9 @@ and in `new Request()`, and AT-Proto's stock resolvers ask for it when they load
 a handle's `/.well-known/atproto-did` and a DID document. So the package ships
 its own DID resolver and gives the default handle resolver a `fetch` that sends
 `redirect: "manual"` and still refuses a redirect. If you pass your own
-`handleResolver`, give it the same treatment. Before 0.2.1, every handle
-without an `_atproto` DNS record, which is every `*.bsky.social` handle, failed
-with `handle_not_found`.
+`handleResolver`, give it the same treatment. Without it, DID documents and
+every handle without an `_atproto` DNS record, which is every `*.bsky.social`
+handle, fail to load.
 
 **To call the user's PDS:** `const session = await auth.getOAuthSession(request)`,
 then `new Agent(session)` from `@atproto/api`. Tokens refresh on demand. Before
@@ -435,48 +475,6 @@ without JavaScript as well. In your own markup, give a submit button
 
 In React, render `<bsky-sign-in>` like any element. Importing the module in a
 client component registers it, and the import is a no-op during SSR.
-
-## Upgrading
-
-### 0.5.2
-
-`@atproto/oauth-client` moves from 0.8 to 0.9.6 (its 0.9.0 split the resolver
-into `@atproto/oauth-resolver`; nothing the library uses changed). The server
-entry re-exports `OAuthCallbackError`, for telling an authorization server's
-error apart in `onSignInError` without depending on `@atproto/oauth-client`
-yourself.
-
-### 0.5.1
-
-Additive: `appName` may be a function of the origin, and a failed
-`authorize()` carries the thrown error as `cause`, for your logs.
-
-### From 0.4 to 0.5
-
-Three breaking changes, each a mechanical edit, and two new error codes:
-
-- `createBlueskyAuth` is now `createAtprotoAuth`, and the types `BlueskyAuth`
-  and `BlueskyAuthOptions` are `AtprotoAuth` and `AtprotoAuthOptions`. Nothing in
-  the library is specific to Bluesky's servers.
-- `onSignIn` takes one object: `onSignIn: (user, request) => …` becomes
-  `onSignIn: ({ user, request }) => …`. It also gets `flow`, and may now return a
-  `Response`.
-- The default error copy for `invalid_handle` and `authorize_failed` no longer
-  says "Bluesky", and `<bsky-sign-in>`'s default label is
-  "Bluesky or Atmosphere handle". Apps that show `AUTH_ERROR_MESSAGES` or the
-  default label change wording; apps with their own copy see nothing.
-
-`AuthErrorCode` gains `invalid_server` and `sign_up_unavailable`. A `switch`
-over it that the compiler checks for exhaustiveness needs the two cases.
-
-New, and opt-in: `mode: "identity"`, `authorize()`, `callbackPaths`,
-`bindToBrowser: false`, `onSignInError`, sign-up (`server`, `prompt`,
-`signUpServers`, `client.signUp()`, the element's `sign-up`), and
-`postgresStore`.
-
-Unchanged on purpose, so nobody is signed out and no stylesheet breaks: the
-cookie names (`bsky_sid`, `bsky_auth_nonce`), the routes under `basePath`, the
-`<bsky-sign-in>` tag and its class names, and what's in the store.
 
 ## Develop
 
